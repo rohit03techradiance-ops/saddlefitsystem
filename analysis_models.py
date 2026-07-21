@@ -16,12 +16,23 @@ class VideoMetadata(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
+    video_url: Optional[str] = None
+    storage_key: Optional[str] = None
+    original_filename: str = ""
+    storage_provider: str = "vercel_blob"
     horse_profile: str = "high_wither"
     saddle_type: str = "english"
     discipline: str = "general_riding"
 
 
 class ComparisonRequest(BaseModel):
+    video_a_url: Optional[str] = None
+    video_b_url: Optional[str] = None
+    video_a_key: Optional[str] = None
+    video_b_key: Optional[str] = None
+    video_a_filename: str = ""
+    video_b_filename: str = ""
+    storage_provider: str = "vercel_blob"
     horse_profile: str = "high_wither"
     saddle_type: str = "english"
     discipline: str = "general_riding"

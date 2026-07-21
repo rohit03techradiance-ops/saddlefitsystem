@@ -1,0 +1,7 @@
+{
+  "name": "saddlefitsystem",
+  "private": true,
+  "dependencies": {
+    "@vercel/blob": "^2.6.1"
+  }
+}

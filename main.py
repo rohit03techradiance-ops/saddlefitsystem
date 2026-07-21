@@ -4,15 +4,18 @@ import json
 import math
 import io
 import base64
+import re
 from datetime import datetime, timezone
 from html import escape as html_escape
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
+from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest, urlopen
 
 import cv2
 import numpy as np
 from fastapi import Body, FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 import runtime_paths as storage
 from analysis_config import (
@@ -60,6 +63,159 @@ except Exception as exc:  # pragma: no cover - optional dependency
 
 _WEASYPRINT = None
 _WEASYPRINT_ATTEMPTED = False
+
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov"}
+ALLOWED_VIDEO_MIME_TYPES = {"video/mp4", "video/quicktime"}
+BLOB_UPLOAD_PREFIX = "videos"
+DEFAULT_VIDEO_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+
+
+def get_video_upload_max_bytes() -> int:
+    raw_value = os.getenv("VIDEO_UPLOAD_MAX_BYTES", str(DEFAULT_VIDEO_UPLOAD_MAX_BYTES))
+    try:
+        return max(1, int(raw_value))
+    except (TypeError, ValueError):
+        return DEFAULT_VIDEO_UPLOAD_MAX_BYTES
+
+
+def get_video_storage_access() -> str:
+    access = os.getenv("VIDEO_STORAGE_ACCESS", "private").strip().lower()
+    if access not in {"private", "public"}:
+        return "private"
+    return access
+
+
+def sanitize_video_filename(filename: str, default_name: str = "uploaded_video.mp4") -> str:
+    candidate = os.path.basename((filename or "").strip()) or default_name
+    stem, ext = os.path.splitext(candidate)
+    ext = ext.lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        ext = ".mp4"
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-") or "uploaded_video"
+    return f"{safe_stem[:80]}{ext}"
+
+
+def infer_video_content_type(filename: str, mime_type: Optional[str] = None) -> str:
+    normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized in ALLOWED_VIDEO_MIME_TYPES:
+        return normalized
+    ext = os.path.splitext((filename or "").lower())[1]
+    if ext == ".mov":
+        return "video/quicktime"
+    return "video/mp4"
+
+
+def is_supported_video_filename(filename: str) -> bool:
+    ext = os.path.splitext((filename or "").lower())[1]
+    return ext in ALLOWED_VIDEO_EXTENSIONS
+
+
+def build_blob_path(scope: str, original_filename: str, slot: str = "") -> str:
+    safe_name = sanitize_video_filename(original_filename)
+    parts = [BLOB_UPLOAD_PREFIX, scope]
+    if slot:
+        parts.append(slot)
+    parts.append(f"{uuid.uuid4().hex}-{safe_name}")
+    return "/".join(parts)
+
+
+def validate_blob_path(pathname: str, scope: Optional[str] = None) -> str:
+    normalized = (pathname or "").replace("\\", "/").strip("/")
+    if not normalized:
+        raise ValueError("Missing blob pathname.")
+    parts = normalized.split("/")
+    if parts[0] != BLOB_UPLOAD_PREFIX:
+        raise ValueError("Invalid blob upload path.")
+    if scope and len(parts) > 1 and parts[1] != scope:
+        raise ValueError("Invalid blob upload scope.")
+    basename = parts[-1]
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", basename or ""):
+        raise ValueError("Invalid blob filename.")
+    ext = os.path.splitext(basename)[1].lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise ValueError("Only MP4 and MOV videos are allowed.")
+    return normalized
+
+
+def validate_video_reference_url(video_url: str) -> str:
+    parsed = urlparse((video_url or "").strip())
+    if parsed.scheme != "https":
+        raise ValueError("Video storage URL must use HTTPS.")
+    host = (parsed.netloc or "").lower()
+    if not host.endswith(".blob.vercel-storage.com"):
+        raise ValueError("Unsupported storage host.")
+    return parsed.geturl()
+
+
+async def write_uploadfile_to_path(upload: UploadFile, destination: Path, max_bytes: Optional[int] = None) -> int:
+    max_bytes = max_bytes or get_video_upload_max_bytes()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    total = 0
+    try:
+        with open(destination, "wb") as handle:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("Video exceeds the configured maximum upload size.")
+                handle.write(chunk)
+    except Exception:
+        if destination.exists():
+            try:
+                destination.unlink()
+            except Exception:
+                pass
+        raise
+    finally:
+        try:
+            await upload.close()
+        except Exception:
+            pass
+    return total
+
+
+def download_blob_to_path(video_url: str, destination: Path, max_bytes: Optional[int] = None) -> int:
+    validated_url = validate_video_reference_url(video_url)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    max_bytes = max_bytes or get_video_upload_max_bytes()
+    parsed = urlparse(validated_url)
+    headers = {}
+    if ".private.blob.vercel-storage.com" in parsed.netloc.lower():
+        token = os.getenv("BLOB_READ_WRITE_TOKEN") or os.getenv("VERCEL_OIDC_TOKEN")
+        if not token:
+            raise ValueError("Missing blob download token.")
+        headers["Authorization"] = f"Bearer {token}"
+    request = UrlRequest(validated_url, headers=headers)
+    total = 0
+    try:
+        with urlopen(request, timeout=120) as response, open(destination, "wb") as handle:
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    expected_size = int(content_length)
+                except (TypeError, ValueError):
+                    expected_size = None
+                else:
+                    if expected_size > max_bytes:
+                        raise ValueError("Video exceeds the configured maximum upload size.")
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("Video exceeds the configured maximum upload size.")
+                handle.write(chunk)
+    except Exception:
+        if destination.exists():
+            try:
+                destination.unlink()
+            except Exception:
+                pass
+        raise
+    return total
 
 
 def get_weasyprint():
@@ -900,9 +1056,11 @@ def build_video_metadata(meta: Dict[str, Any], metrics: Optional[Dict[str, Any]]
         duration = float(metrics.get("duration_sec", 0.0) or 0.0)
         if duration > 0 and frames:
             fps = float(frames / duration)
+    display_name = str(meta.get("original_filename") or meta.get("video_filename", ""))
+    video_name = str(meta.get("video_filename", ""))
     return VideoMetadata(
-        filename=str(meta.get("video_filename", "")),
-        mime_type=guess_mime(str(meta.get("video_filename", ""))) if meta.get("video_filename") else "",
+        filename=display_name or video_name,
+        mime_type=guess_mime(video_name) if video_name else "",
         duration_sec=float(metrics.get("duration_sec", 0.0) or 0.0) or None,
         width=int(meta.get("frame_width", 0) or 0) or None,
         height=int(meta.get("frame_height", 0) or 0) or None,
@@ -4081,6 +4239,14 @@ def analyze_video_auto(run_dir: str, analysis_id: str, meta: dict) -> Tuple[dict
 
 
 # ------------------- UI Pages -------------------
+@app.get("/dashboard.js")
+def dashboard_js():
+    js_path = Path(__file__).with_name("dashboard.js")
+    if not js_path.exists():
+        return Response("console.error('dashboard.js missing');", media_type="application/javascript", status_code=404)
+    return Response(js_path.read_text(encoding="utf-8"), media_type="application/javascript")
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     dep_warning = ""
@@ -4094,6 +4260,19 @@ def dashboard():
           </div>
         </div>
         """
+    upload_mode = "blob" if storage.IS_VERCEL else "multipart"
+    dashboard_config = json.dumps(
+        {
+            "uploadMode": upload_mode,
+            "storageAccess": get_video_storage_access(),
+            "maxVideoBytes": get_video_upload_max_bytes(),
+            "maxVideoLabel": f"{get_video_upload_max_bytes() // (1024 * 1024)} MB",
+            "blobUploadUrl": "/api/blob-upload",
+            "analysisApiUrl": "/api/analyze",
+            "compareApiUrl": "/api/compare",
+            "isVercel": storage.IS_VERCEL,
+        }
+    )
     return f"""
     <html>
     <head>
@@ -4297,6 +4476,16 @@ def dashboard():
         .progress-subtitle {{ color: #cbd5e1; margin-top: 4px; line-height: 1.5; }}
         .progress-bar {{ margin-top: 16px; height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow:hidden; }}
         .progress-fill {{ width: 0%; height: 100%; border-radius: 999px; background: linear-gradient(135deg, #5be286, #2dd4bf); transition: width 0.35s ease; }}
+        .progress-fill.indeterminate {{
+          width: 58%;
+          transform-origin: left center;
+          animation: progressPulse 1.2s ease-in-out infinite;
+        }}
+        @keyframes progressPulse {{
+          0% {{ opacity: 0.65; transform: scaleX(0.66); }}
+          50% {{ opacity: 1; transform: scaleX(1); }}
+          100% {{ opacity: 0.65; transform: scaleX(0.66); }}
+        }}
         .progress-steps {{ display:grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 16px; }}
         .progress-step {{
           padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
@@ -4370,7 +4559,7 @@ def dashboard():
             <p class="hint" style="margin-top:4px;">Designed for quick uploads and clean rider/horse metrics without unnecessary clutter.</p>
             <form id="uploadForm" action="/start" method="post" enctype="multipart/form-data">
               <label>Video (MP4 / MOV)</label>
-              <input type="file" name="video" accept="video/*" required />
+              <input type="file" name="video" accept="video/mp4,video/quicktime,.mp4,.mov" required />
 
               <div class="input-row">
                 <div>
@@ -4442,9 +4631,9 @@ def dashboard():
             </div>
             <form id="compareForm" action="/compare_start" method="post" enctype="multipart/form-data">
               <label>Video A (MP4 / MOV)</label>
-              <input type="file" name="video_a" accept="video/*" required />
+              <input type="file" name="video_a" accept="video/mp4,video/quicktime,.mp4,.mov" required />
               <label>Video B (MP4 / MOV)</label>
-              <input type="file" name="video_b" accept="video/*" required />
+              <input type="file" name="video_b" accept="video/mp4,video/quicktime,.mp4,.mov" required />
 
               <div class="input-row">
                 <div>
@@ -4533,142 +4722,9 @@ def dashboard():
       </div>
 
       <script>
-        const progressFlow = [
-          {{ title: "Uploading Video", subtitle: "Transferring the ride and validating the clip." }},
-          {{ title: "Processing Video", subtitle: "Extracting frames and preparing the analysis." }},
-          {{ title: "Detecting Rider/Horse", subtitle: "Locating rider posture and horse reference points." }},
-          {{ title: "Tracking Movement", subtitle: "Following motion through the ride." }},
-          {{ title: "Calculating Metrics", subtitle: "Measuring posture, balance, symmetry, and stability." }},
-          {{ title: "Generating Analysis", subtitle: "Scoring the ride against the selected discipline." }},
-          {{ title: "Preparing Report", subtitle: "Building the HTML and PDF report package." }},
-          {{ title: "Analysis Complete", subtitle: "Final results are loading now." }},
-        ];
-        let progressTimer = null;
-
-        function openHorseGuide() {{
-          window.open("/horse-scheme-guide", "_blank", "noopener");
-        }}
-
-        function openDisciplineGuide() {{
-          window.open("/discipline-guide", "_blank", "noopener");
-        }}
-
-        function openSchemeGuide() {{
-          openHorseGuide();
-        }}
-
-        function closeSchemeGuide() {{
-          const modal = document.getElementById("schemeModal");
-          if (modal) modal.style.display = "none";
-        }}
-
-        function syncLegacySelection(isCompare) {{
-          const profileSelect = document.getElementById(isCompare ? "horseProfileCompare" : "horseProfileSelect");
-          const disciplineSelect = document.getElementById(isCompare ? "disciplineCompare" : "disciplineSelect");
-          const hiddenScheme = document.getElementById(isCompare ? "horseSchemeCompare" : "horseScheme");
-          if (profileSelect && hiddenScheme) hiddenScheme.value = profileSelect.value || "high_wither";
-          if (disciplineSelect && !disciplineSelect.value) disciplineSelect.value = "general_riding";
-        }}
-
-        function quickProfile(val, isCompare) {{
-          const select = document.getElementById(isCompare ? "horseProfileCompare" : "horseProfileSelect");
-          if (select) select.value = val;
-          syncLegacySelection(!!isCompare);
-        }}
-
-        function quickDiscipline(val, isCompare) {{
-          const select = document.getElementById(isCompare ? "disciplineCompare" : "disciplineSelect");
-          if (select) select.value = val;
-          syncLegacySelection(!!isCompare);
-        }}
-
-        function quickScheme(val) {{
-          const alias = {{
-            trail: "trail_riding",
-            dressage: "dressage",
-            racing: "racing_gallop",
-            show_jumping: "show_jumping"
-          }};
-          const mapped = alias[val] || val;
-          quickDiscipline(mapped, false);
-          quickDiscipline(mapped, true);
-        }}
-
-        function showProgressOverlay(kind) {{
-          const overlay = document.getElementById("progressOverlay");
-          const stepsNode = document.getElementById("progressSteps");
-          const titleNode = document.getElementById("progressTitle");
-          const subtitleNode = document.getElementById("progressSubtitle");
-          const percentNode = document.getElementById("progressPercent");
-          const fillNode = document.getElementById("progressFill");
-          if (!overlay || !stepsNode || !titleNode || !subtitleNode || !percentNode || !fillNode) return;
-
-          const steps = progressFlow;
-          stepsNode.innerHTML = steps.map((step, index) => `
-            <div class="progress-step${{index === 0 ? " active" : ""}}" data-progress-step="${{index}}">
-              <b>${{step.title}}</b>
-              <div>${{step.subtitle}}</div>
-            </div>
-          `).join("");
-
-          overlay.style.display = "flex";
-          document.body.style.overflow = "hidden";
-
-          let index = 0;
-          const render = () => {{
-            const current = steps[index];
-            titleNode.textContent = current.title;
-            subtitleNode.textContent = current.subtitle + (kind === "comparison" ? " Comparing both rides." : "");
-            const pct = Math.round((index / Math.max(steps.length - 1, 1)) * 100);
-            percentNode.textContent = pct + "%";
-            fillNode.style.width = pct + "%";
-            const cards = stepsNode.querySelectorAll(".progress-step");
-            cards.forEach((card, i) => {{
-              card.classList.toggle("active", i === index);
-            }});
-          }};
-
-          render();
-          if (progressTimer) clearInterval(progressTimer);
-          progressTimer = window.setInterval(() => {{
-            if (index < steps.length - 1) {{
-              index += 1;
-              render();
-            }} else {{
-              clearInterval(progressTimer);
-              progressTimer = null;
-            }}
-          }}, 900);
-        }}
-
-        function prepareForm(formId, isCompare) {{
-          const form = document.getElementById(formId);
-          if (!form) return;
-          form.addEventListener("submit", (event) => {{
-            event.preventDefault();
-            syncLegacySelection(!!isCompare);
-            showProgressOverlay(isCompare ? "comparison" : "analysis");
-            window.setTimeout(() => form.submit(), 150);
-          }});
-        }}
-
-        document.addEventListener("DOMContentLoaded", () => {{
-          syncLegacySelection(false);
-          syncLegacySelection(true);
-          prepareForm("uploadForm", false);
-          prepareForm("compareForm", true);
-
-          const profileMain = document.getElementById("horseProfileSelect");
-          const disciplineMain = document.getElementById("disciplineSelect");
-          const profileCompare = document.getElementById("horseProfileCompare");
-          const disciplineCompare = document.getElementById("disciplineCompare");
-
-          [profileMain, disciplineMain, profileCompare, disciplineCompare].forEach((node) => {{
-            if (!node) return;
-            node.addEventListener("change", () => syncLegacySelection(node.id.includes("Compare")));
-          }});
-        }});
+        window.__SADDLEFIT_CONFIG__ = {dashboard_config};
       </script>
+      <script src="/dashboard.js" defer></script>
     </body>
     </html>
     """
@@ -4902,22 +4958,24 @@ def render_comparison_report_from_record(
     )
 
 
-async def process_single_analysis_upload(
-    video: UploadFile,
+def process_single_analysis_path(
+    video_path: Path,
+    analysis_id: str,
+    original_filename: str,
     horse_profile: str,
     discipline: str,
     horse_scheme: str,
     saddle_type: str,
+    source_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     storage.ensure_runtime_directories()
-    analysis_id = str(uuid.uuid4())
     run_dir = storage.analysis_output_dir(analysis_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = os.path.basename(video.filename or "") or "uploaded_video.mp4"
-    video_path = run_dir / filename
-    with open(video_path, "wb") as handle:
-        handle.write(await video.read())
+    if not video_path.exists():
+        raise ValueError("Video file not found.")
+    if video_path.stat().st_size > get_video_upload_max_bytes():
+        raise ValueError("Video exceeds the configured maximum upload size.")
 
     frame_path = run_dir / "frame0.png"
     w, h = extract_first_frame(video_path, frame_path)
@@ -4926,7 +4984,8 @@ async def process_single_analysis_upload(
     discipline_key = normalize_discipline(discipline or discipline_key)
     meta = {
         "analysis_id": analysis_id,
-        "video_filename": filename,
+        "video_filename": video_path.name,
+        "original_filename": original_filename or video_path.name,
         "horse_scheme": horse_profile_key,
         "horse_profile": horse_profile_key,
         "discipline": discipline_key,
@@ -4937,6 +4996,8 @@ async def process_single_analysis_upload(
         "frame_width": w,
         "frame_height": h,
     }
+    if source_meta:
+        meta.update(source_meta)
     with open(run_dir / "meta.json", "w", encoding="utf-8") as handle:
         json.dump(meta, handle, indent=2)
 
@@ -4961,33 +5022,32 @@ async def process_single_analysis_upload(
     return record
 
 
-async def process_comparison_uploads(
-    video_a: UploadFile,
-    video_b: UploadFile,
+def process_comparison_paths(
+    video_a_path: Path,
+    video_b_path: Path,
+    compare_id: str,
     horse_profile: str,
     discipline: str,
     horse_scheme: str,
     saddle_type: str,
+    label_a: str,
+    label_b: str,
+    source_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     storage.ensure_runtime_directories()
-    compare_id = str(uuid.uuid4())
     base_dir = storage.comparison_output_dir(compare_id)
     run_a = storage.comparison_case_dir(compare_id, "a")
     run_b = storage.comparison_case_dir(compare_id, "b")
     run_a.mkdir(parents=True, exist_ok=True)
     run_b.mkdir(parents=True, exist_ok=True)
 
-    fname_a = os.path.basename(video_a.filename or "") or "video_a.mp4"
-    fname_b = os.path.basename(video_b.filename or "") or "video_b.mp4"
-    path_a = run_a / fname_a
-    path_b = run_b / fname_b
-    with open(path_a, "wb") as handle:
-        handle.write(await video_a.read())
-    with open(path_b, "wb") as handle:
-        handle.write(await video_b.read())
+    if not video_a_path.exists() or not video_b_path.exists():
+        raise ValueError("Comparison videos are missing.")
+    if video_a_path.stat().st_size > get_video_upload_max_bytes() or video_b_path.stat().st_size > get_video_upload_max_bytes():
+        raise ValueError("One of the comparison videos exceeds the configured maximum upload size.")
 
-    wa, ha = extract_first_frame(path_a, run_a / "frame0.png")
-    wb, hb = extract_first_frame(path_b, run_b / "frame0.png")
+    wa, ha = extract_first_frame(video_a_path, run_a / "frame0.png")
+    wb, hb = extract_first_frame(video_b_path, run_b / "frame0.png")
 
     profile_key, discipline_key = split_legacy_scheme(horse_scheme)
     horse_profile_key = normalize_horse_profile(horse_profile or profile_key or horse_scheme)
@@ -4998,20 +5058,37 @@ async def process_comparison_uploads(
         "discipline": discipline_key,
         "saddle_type": saddle_type,
     }
-    meta_a = {**meta_base, "analysis_id": compare_id + "_a", "video_filename": fname_a, "frame_width": wa, "frame_height": ha}
-    meta_b = {**meta_base, "analysis_id": compare_id + "_b", "video_filename": fname_b, "frame_width": wb, "frame_height": hb}
+    meta_a = {
+        **meta_base,
+        "analysis_id": compare_id + "_a",
+        "video_filename": video_a_path.name,
+        "original_filename": label_a or video_a_path.name,
+        "frame_width": wa,
+        "frame_height": ha,
+    }
+    meta_b = {
+        **meta_base,
+        "analysis_id": compare_id + "_b",
+        "video_filename": video_b_path.name,
+        "original_filename": label_b or video_b_path.name,
+        "frame_width": wb,
+        "frame_height": hb,
+    }
+    if source_meta:
+        meta_a.update(source_meta.get("video_a", {}) if isinstance(source_meta.get("video_a"), dict) else {})
+        meta_b.update(source_meta.get("video_b", {}) if isinstance(source_meta.get("video_b"), dict) else {})
 
     result_a, metrics_a, scored_a, conf_a = analyze_video_auto(run_a, meta_a["analysis_id"], meta_a)
     result_b, metrics_b, scored_b, conf_b = analyze_video_auto(run_b, meta_b["analysis_id"], meta_b)
 
     compare_meta = {"horse_scheme": horse_profile_key, "horse_profile": horse_profile_key, "discipline": discipline_key, "saddle_type": saddle_type}
-    comparison_payload = build_comparison_payload(compare_id, compare_meta, fname_a, fname_b, result_a, result_b)
+    comparison_payload = build_comparison_payload(compare_id, compare_meta, label_a, label_b, result_a, result_b)
     pdf_generated, final_html = save_compare_report(
         base_dir,
         compare_id,
         compare_meta,
-        fname_a,
-        fname_b,
+        label_a,
+        label_b,
         metrics_a,
         metrics_b,
         scored_a,
@@ -5022,13 +5099,13 @@ async def process_comparison_uploads(
     compare_json = {
         "compare_id": compare_id,
         "created_at": comparison_payload.get("created_at"),
-        "label_a": fname_a,
-        "label_b": fname_b,
+        "label_a": label_a,
+        "label_b": label_b,
         "comparison_payload": comparison_payload,
         "analysis_a": result_a,
         "analysis_b": result_b,
-        "video_a": {"file": fname_a, "confidence": conf_a, "metrics": metrics_a, "scores": scored_a["scores"]},
-        "video_b": {"file": fname_b, "confidence": conf_b, "metrics": metrics_b, "scores": scored_b["scores"]},
+        "video_a": {"file": label_a, "confidence": conf_a, "metrics": metrics_a, "scores": scored_a["scores"]},
+        "video_b": {"file": label_b, "confidence": conf_b, "metrics": metrics_b, "scores": scored_b["scores"]},
     }
     with open(base_dir / "compare.json", "w", encoding="utf-8") as handle:
         json.dump(compare_json, handle, indent=2)
@@ -5039,8 +5116,8 @@ async def process_comparison_uploads(
             "compare_id": compare_id,
             "base_dir": os.fspath(base_dir),
             "meta": compare_meta,
-            "label_a": fname_a,
-            "label_b": fname_b,
+            "label_a": label_a,
+            "label_b": label_b,
             "comparison_payload": comparison_payload,
             "analysis_a": result_a,
             "analysis_b": result_b,
@@ -5056,6 +5133,141 @@ async def process_comparison_uploads(
         }
     )
     return record
+
+
+async def process_single_analysis_upload(
+    video: UploadFile,
+    horse_profile: str,
+    discipline: str,
+    horse_scheme: str,
+    saddle_type: str,
+) -> Dict[str, Any]:
+    analysis_id = str(uuid.uuid4())
+    run_dir = storage.analysis_output_dir(analysis_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = sanitize_video_filename(video.filename or "uploaded_video.mp4")
+    video_path = run_dir / filename
+    await write_uploadfile_to_path(video, video_path)
+
+    return process_single_analysis_path(
+        video_path,
+        analysis_id,
+        video.filename or filename,
+        horse_profile,
+        discipline,
+        horse_scheme,
+        saddle_type,
+        source_meta={"upload_mode": "multipart"},
+    )
+
+
+async def process_single_analysis_reference(
+    payload: AnalysisRequest,
+) -> Dict[str, Any]:
+    analysis_id = str(uuid.uuid4())
+    run_dir = storage.analysis_output_dir(analysis_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    source_url = validate_video_reference_url(payload.video_url or "")
+    original_filename = sanitize_video_filename(payload.original_filename or os.path.basename(urlparse(source_url).path) or "uploaded_video.mp4")
+    video_path = run_dir / original_filename
+    download_blob_to_path(source_url, video_path)
+
+    return process_single_analysis_path(
+        video_path,
+        analysis_id,
+        payload.original_filename or original_filename,
+        payload.horse_profile,
+        payload.discipline,
+        "",
+        payload.saddle_type,
+        source_meta={
+            "video_url": source_url,
+            "storage_key": payload.storage_key or "",
+            "storage_provider": payload.storage_provider or "vercel_blob",
+            "upload_mode": "direct",
+        },
+    )
+
+
+async def process_comparison_uploads(
+    video_a: UploadFile,
+    video_b: UploadFile,
+    horse_profile: str,
+    discipline: str,
+    horse_scheme: str,
+    saddle_type: str,
+) -> Dict[str, Any]:
+    compare_id = str(uuid.uuid4())
+    run_a = storage.comparison_case_dir(compare_id, "a")
+    run_b = storage.comparison_case_dir(compare_id, "b")
+    run_a.mkdir(parents=True, exist_ok=True)
+    run_b.mkdir(parents=True, exist_ok=True)
+
+    fname_a = sanitize_video_filename(video_a.filename or "video_a.mp4")
+    fname_b = sanitize_video_filename(video_b.filename or "video_b.mp4")
+    path_a = run_a / fname_a
+    path_b = run_b / fname_b
+    await write_uploadfile_to_path(video_a, path_a)
+    await write_uploadfile_to_path(video_b, path_b)
+
+    return process_comparison_paths(
+        path_a,
+        path_b,
+        compare_id,
+        horse_profile,
+        discipline,
+        horse_scheme,
+        saddle_type,
+        video_a.filename or fname_a,
+        video_b.filename or fname_b,
+        source_meta={"upload_mode": "multipart"},
+    )
+
+
+async def process_comparison_reference(
+    payload: ComparisonRequest,
+) -> Dict[str, Any]:
+    compare_id = str(uuid.uuid4())
+    run_a = storage.comparison_case_dir(compare_id, "a")
+    run_b = storage.comparison_case_dir(compare_id, "b")
+    run_a.mkdir(parents=True, exist_ok=True)
+    run_b.mkdir(parents=True, exist_ok=True)
+
+    source_url_a = validate_video_reference_url(payload.video_a_url or "")
+    source_url_b = validate_video_reference_url(payload.video_b_url or "")
+    fname_a = sanitize_video_filename(payload.video_a_filename or os.path.basename(urlparse(source_url_a).path) or "video_a.mp4")
+    fname_b = sanitize_video_filename(payload.video_b_filename or os.path.basename(urlparse(source_url_b).path) or "video_b.mp4")
+    path_a = run_a / fname_a
+    path_b = run_b / fname_b
+    download_blob_to_path(source_url_a, path_a)
+    download_blob_to_path(source_url_b, path_b)
+
+    return process_comparison_paths(
+        path_a,
+        path_b,
+        compare_id,
+        payload.horse_profile,
+        payload.discipline,
+        "",
+        payload.saddle_type,
+        payload.video_a_filename or fname_a,
+        payload.video_b_filename or fname_b,
+        source_meta={
+            "video_a": {
+                "video_url": source_url_a,
+                "storage_key": payload.video_a_key or "",
+                "storage_provider": payload.storage_provider or "vercel_blob",
+            },
+            "video_b": {
+                "video_url": source_url_b,
+                "storage_key": payload.video_b_key or "",
+                "storage_provider": payload.storage_provider or "vercel_blob",
+            },
+            "upload_mode": "direct",
+        },
+    )
 
 
 if MULTIPART_AVAILABLE:
@@ -5105,99 +5317,6 @@ if MULTIPART_AVAILABLE:
         except Exception as exc:
             return HTMLResponse(f"<h3>Comparison failed:</h3><p>{exc}</p>", status_code=400)
         return HTMLResponse(record.get("report_html") or render_comparison_report_from_record(record, pdf_available=bool(record.get("pdf_generated")), show_video=True, include_analysis=False))
-
-
-    @app.post("/api/analyze", response_model=AnalysisResponse)
-    async def api_analyze(
-        video: UploadFile = File(...),
-        horse_profile: str = Form("high_wither"),
-        discipline: str = Form("general_riding"),
-        horse_scheme: str = Form(""),
-        saddle_type: str = Form("english"),
-    ):
-        if video is None or not video.filename:
-            return JSONResponse({"error": "No video uploaded."}, status_code=400)
-        record = await process_single_analysis_upload(video, horse_profile, discipline, horse_scheme, saddle_type)
-        payload = dict(record["analysis_payload"])
-        payload["report_html"] = None
-        return _validate_model(AnalysisResponse, payload)
-
-
-    @app.get("/api/analysis/{analysis_id}", response_model=AnalysisResponse)
-    def api_analysis_get(analysis_id: str):
-        record = load_analysis_record(analysis_id)
-        if record is None:
-            return JSONResponse({"error": "analysis_not_found"}, status_code=404)
-        payload = dict(record["analysis_payload"])
-        payload["report_html"] = None
-        return _validate_model(AnalysisResponse, payload)
-
-
-    @app.get("/api/analysis/{analysis_id}/report", response_model=AnalysisReportResponse)
-    def api_analysis_report(analysis_id: str):
-        record = load_analysis_record(analysis_id)
-        if record is None:
-            return JSONResponse({"error": "analysis_not_found"}, status_code=404)
-        report_html = record.get("report_html") or render_analysis_report_from_record(record, pdf_available=True)
-        payload = dict(record["analysis_payload"])
-        payload["report_html"] = None
-        analysis_model = _validate_model(AnalysisResponse, payload)
-        return _validate_model(
-            AnalysisReportResponse,
-            {
-                "analysis": analysis_model,
-                "report_html": report_html,
-                "report_url": payload.get("report_url"),
-                "pdf_url": payload.get("pdf_url"),
-            },
-        )
-
-
-    @app.post("/api/compare", response_model=ComparisonResponse)
-    async def api_compare(
-        video_a: UploadFile = File(...),
-        video_b: UploadFile = File(...),
-        horse_profile: str = Form("high_wither"),
-        discipline: str = Form("general_riding"),
-        horse_scheme: str = Form(""),
-        saddle_type: str = Form("english"),
-    ):
-        if not video_a.filename or not video_b.filename:
-            return JSONResponse({"error": "Both videos are required."}, status_code=400)
-        record = await process_comparison_uploads(video_a, video_b, horse_profile, discipline, horse_scheme, saddle_type)
-        payload = dict(record["comparison_payload"])
-        payload["report_html"] = None
-        return _validate_model(ComparisonResponse, payload)
-
-
-    @app.get("/api/comparison/{comparison_id}", response_model=ComparisonResponse)
-    def api_comparison_get(comparison_id: str):
-        record = load_comparison_record(comparison_id)
-        if record is None:
-            return JSONResponse({"error": "comparison_not_found"}, status_code=404)
-        payload = dict(record["comparison_payload"])
-        payload["report_html"] = None
-        return _validate_model(ComparisonResponse, payload)
-
-
-    @app.get("/api/comparison/{comparison_id}/report", response_model=ComparisonReportResponse)
-    def api_comparison_report(comparison_id: str):
-        record = load_comparison_record(comparison_id)
-        if record is None:
-            return JSONResponse({"error": "comparison_not_found"}, status_code=404)
-        report_html = record.get("report_html") or render_comparison_report_from_record(record, pdf_available=True, show_video=True, include_analysis=False)
-        payload = dict(record["comparison_payload"])
-        payload["report_html"] = None
-        comparison_model = _validate_model(ComparisonResponse, payload)
-        return _validate_model(
-            ComparisonReportResponse,
-            {
-                "comparison": comparison_model,
-                "report_html": report_html,
-                "report_url": payload.get("report_url"),
-                "pdf_url": payload.get("pdf_url"),
-            },
-        )
 else:
     @app.post("/start", response_class=HTMLResponse)
     async def start_missing():
@@ -5207,29 +5326,95 @@ else:
     async def compare_start_missing():
         return HTMLResponse("<h3>Server missing dependency python-multipart. Please install it with 'pip install python-multipart' and restart.</h3>", status_code=500)
 
-    @app.post("/api/analyze", response_model=AnalysisResponse)
-    async def api_analyze_missing():
-        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
 
-    @app.get("/api/analysis/{analysis_id}", response_model=AnalysisResponse)
-    def api_analysis_get_missing(analysis_id: str):
-        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+@app.post("/api/analyze", response_model=AnalysisResponse)
+async def api_analyze(payload: AnalysisRequest = Body(...)):
+    if not payload.video_url:
+        return JSONResponse({"error": "Missing video_url."}, status_code=400)
+    try:
+        record = await process_single_analysis_reference(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "Analysis failed."}, status_code=500)
+    response_payload = dict(record["analysis_payload"])
+    response_payload["report_html"] = None
+    return _validate_model(AnalysisResponse, response_payload)
 
-    @app.get("/api/analysis/{analysis_id}/report", response_model=AnalysisReportResponse)
-    def api_analysis_report_missing(analysis_id: str):
-        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
 
-    @app.post("/api/compare", response_model=ComparisonResponse)
-    async def api_compare_missing():
-        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+@app.get("/api/analysis/{analysis_id}", response_model=AnalysisResponse)
+def api_analysis_get(analysis_id: str):
+    record = load_analysis_record(analysis_id)
+    if record is None:
+        return JSONResponse({"error": "analysis_not_found"}, status_code=404)
+    payload = dict(record["analysis_payload"])
+    payload["report_html"] = None
+    return _validate_model(AnalysisResponse, payload)
 
-    @app.get("/api/comparison/{comparison_id}", response_model=ComparisonResponse)
-    def api_comparison_get_missing(comparison_id: str):
-        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
 
-    @app.get("/api/comparison/{comparison_id}/report", response_model=ComparisonReportResponse)
-    def api_comparison_report_missing(comparison_id: str):
-        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+@app.get("/api/analysis/{analysis_id}/report", response_model=AnalysisReportResponse)
+def api_analysis_report(analysis_id: str):
+    record = load_analysis_record(analysis_id)
+    if record is None:
+        return JSONResponse({"error": "analysis_not_found"}, status_code=404)
+    report_html = record.get("report_html") or render_analysis_report_from_record(record, pdf_available=True)
+    payload = dict(record["analysis_payload"])
+    payload["report_html"] = None
+    analysis_model = _validate_model(AnalysisResponse, payload)
+    return _validate_model(
+        AnalysisReportResponse,
+        {
+            "analysis": analysis_model,
+            "report_html": report_html,
+            "report_url": payload.get("report_url"),
+            "pdf_url": payload.get("pdf_url"),
+        },
+    )
+
+
+@app.post("/api/compare", response_model=ComparisonResponse)
+async def api_compare(payload: ComparisonRequest = Body(...)):
+    if not payload.video_a_url or not payload.video_b_url:
+        return JSONResponse({"error": "Both video_a_url and video_b_url are required."}, status_code=400)
+    try:
+        record = await process_comparison_reference(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "Comparison failed."}, status_code=500)
+    response_payload = dict(record["comparison_payload"])
+    response_payload["report_html"] = None
+    return _validate_model(ComparisonResponse, response_payload)
+
+
+@app.get("/api/comparison/{comparison_id}", response_model=ComparisonResponse)
+def api_comparison_get(comparison_id: str):
+    record = load_comparison_record(comparison_id)
+    if record is None:
+        return JSONResponse({"error": "comparison_not_found"}, status_code=404)
+    payload = dict(record["comparison_payload"])
+    payload["report_html"] = None
+    return _validate_model(ComparisonResponse, payload)
+
+
+@app.get("/api/comparison/{comparison_id}/report", response_model=ComparisonReportResponse)
+def api_comparison_report(comparison_id: str):
+    record = load_comparison_record(comparison_id)
+    if record is None:
+        return JSONResponse({"error": "comparison_not_found"}, status_code=404)
+    report_html = record.get("report_html") or render_comparison_report_from_record(record, pdf_available=True, show_video=True, include_analysis=False)
+    payload = dict(record["comparison_payload"])
+    payload["report_html"] = None
+    comparison_model = _validate_model(ComparisonResponse, payload)
+    return _validate_model(
+        ComparisonReportResponse,
+        {
+            "comparison": comparison_model,
+            "report_html": report_html,
+            "report_url": payload.get("report_url"),
+            "pdf_url": payload.get("pdf_url"),
+        },
+    )
 
 
 @app.get("/frame/{analysis_id}")
