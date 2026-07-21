@@ -437,6 +437,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 COMPARE_DIR = os.path.join(OUTPUTS_DIR, "compare")
+IS_VERCEL = bool(os.getenv("VERCEL"))
+
+if IS_VERCEL:
+    # Vercel only allows runtime file writing inside /tmp
+    BASE_RUNTIME_DIR = tempfile.gettempdir()
+else:
+    # Local development
+    BASE_RUNTIME_DIR = os.path.dirname(os.path.abspath(__file__))
+
+OUTPUT_DIR = os.path.join(BASE_RUNTIME_DIR, "outputs")
+COMPARE_DIR = os.path.join(OUTPUT_DIR, "compare")
+
+# Create required directories
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(COMPARE_DIR, exist_ok=True)
 
 # --------- Horse "schemes" / disciplines list ----------
