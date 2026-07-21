@@ -4247,6 +4247,8 @@ def dashboard_js():
     return Response(js_path.read_text(encoding="utf-8"), media_type="application/javascript")
 
 
+# Serve the dashboard at both `/` and `/start` so direct bookmarks stay lightweight.
+@app.get("/start", response_class=HTMLResponse)
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     dep_warning = ""
@@ -5270,7 +5272,7 @@ async def process_comparison_reference(
     )
 
 
-if MULTIPART_AVAILABLE:
+if MULTIPART_AVAILABLE and not storage.IS_VERCEL:
     @app.post("/start", response_class=HTMLResponse)
     async def start(
         video: UploadFile = File(...),
@@ -5302,7 +5304,7 @@ if MULTIPART_AVAILABLE:
         discipline_compare: str = Form("general_riding"),
         horse_scheme_compare: str = Form(""),
         saddle_type_compare: str = Form("english"),
-    ):
+        ):
         if not video_a.filename or not video_b.filename:
             return HTMLResponse("<h3>Both videos are required.</h3>", status_code=400)
         try:
@@ -5320,10 +5322,32 @@ if MULTIPART_AVAILABLE:
 else:
     @app.post("/start", response_class=HTMLResponse)
     async def start_missing():
+        if storage.IS_VERCEL:
+            return HTMLResponse(
+                """
+                <html><body style="font-family: Arial; margin: 32px;">
+                  <h3>Multipart uploads are disabled on Vercel.</h3>
+                  <p>Use the dashboard flow, which uploads videos directly to Blob storage and then calls the JSON analysis API.</p>
+                  <p><a href="/start">Back to home</a></p>
+                </body></html>
+                """,
+                status_code=405,
+            )
         return HTMLResponse("<h3>Server missing dependency python-multipart. Please install it with 'pip install python-multipart' and restart.</h3>", status_code=500)
 
     @app.post("/compare_start", response_class=HTMLResponse)
     async def compare_start_missing():
+        if storage.IS_VERCEL:
+            return HTMLResponse(
+                """
+                <html><body style="font-family: Arial; margin: 32px;">
+                  <h3>Multipart uploads are disabled on Vercel.</h3>
+                  <p>Use the dashboard flow, which uploads both videos directly to Blob storage and then calls the JSON comparison API.</p>
+                  <p><a href="/start">Back to home</a></p>
+                </body></html>
+                """,
+                status_code=405,
+            )
         return HTMLResponse("<h3>Server missing dependency python-multipart. Please install it with 'pip install python-multipart' and restart.</h3>", status_code=500)
 
 
