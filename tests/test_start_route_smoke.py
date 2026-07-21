@@ -52,16 +52,39 @@ async def call_asgi(app, method: str, path: str, body: bytes = b"", headers=None
     return response
 
 
+def header_value(response, name: str) -> str:
+    name_bytes = name.lower().encode("latin-1")
+    for key, value in response["headers"]:
+        if key == name_bytes:
+            return value.decode("latin-1")
+    return ""
+
+
 class StartRouteSmokeTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_start_returns_lightweight_html(self):
-        response = await call_asgi(main.app, "GET", "/start", headers={"host": "testserver"})
-        body = bytes(response["body"])
-        size = len(body)
-        print(f"GET /start status={response['status']} bytes={size}")
+        paths = ["/", "/start", "/docs", "/dashboard.js", "/favicon.svg", "/favicon.ico", "/favicon.png"]
+        for path in paths:
+            with self.subTest(path=path):
+                response = await call_asgi(main.app, "GET", path, headers={"host": "testserver"})
+                body = bytes(response["body"])
+                size = len(body)
+                content_type = header_value(response, "content-type")
+                print(f"GET {path} status={response['status']} bytes={size} content_type={content_type}")
 
-        self.assertEqual(response["status"], 200)
-        self.assertLess(size, 100_000)
-        self.assertIn(b"dashboard.js", body)
+                self.assertEqual(response["status"], 200)
+                self.assertGreater(size, 0)
+                self.assertLess(size, 100_000)
+
+                if path in {"/", "/start"}:
+                    self.assertIn(b"dashboard.js", body)
+                elif path == "/docs":
+                    self.assertIn("text/html", content_type)
+                    self.assertIn(b"<html", body)
+                elif path == "/dashboard.js":
+                    self.assertIn(b"window", body)
+                else:
+                    self.assertIn("image/svg+xml", content_type)
+                    self.assertIn(b"<svg", body)
 
 
 if __name__ == "__main__":

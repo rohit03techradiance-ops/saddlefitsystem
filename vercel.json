@@ -4,12 +4,5 @@
     "main.py": {
       "maxDuration": 300
     }
-  },
-  "routes": [
-    {
-      "src": "/start",
-      "methods": ["GET"],
-      "dest": "/"
-    }
-  ]
+  }
 }

@@ -4,7 +4,7 @@ import main
 
 
 async def call(app, method, path):
-    response = {"status": None, "body": bytearray()}
+    response = {"status": None, "headers": [], "body": bytearray()}
     sent = False
 
     async def receive():
@@ -17,6 +17,7 @@ async def call(app, method, path):
     async def send(message):
         if message["type"] == "http.response.start":
             response["status"] = message["status"]
+            response["headers"] = message.get("headers", [])
         elif message["type"] == "http.response.body":
             response["body"].extend(message.get("body", b""))
 
@@ -39,10 +40,21 @@ async def call(app, method, path):
     return response
 
 
+def header_value(response, name):
+    name_bytes = name.lower().encode("latin-1")
+    for key, value in response["headers"]:
+        if key == name_bytes:
+            return value.decode("latin-1")
+    return ""
+
+
 async def main_async():
-    for path in ["/", "/start", "/docs"]:
+    for path in ["/", "/start", "/docs", "/dashboard.js", "/favicon.svg", "/favicon.ico", "/favicon.png"]:
         resp = await call(main.app, "GET", path)
-        print(f"{path} status={resp['status']} bytes={len(resp['body'])}")
+        print(
+            f"{path} status={resp['status']} bytes={len(resp['body'])} "
+            f"content_type={header_value(resp, 'content-type')}"
+        )
 
 
 if __name__ == "__main__":

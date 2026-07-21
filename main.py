@@ -4247,6 +4247,33 @@ def dashboard_js():
     return Response(js_path.read_text(encoding="utf-8"), media_type="application/javascript")
 
 
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Riders Bay favicon">
+  <defs>
+    <linearGradient id="rb" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5be286" />
+      <stop offset="100%" stop-color="#2dd4bf" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="#0f172a" />
+  <circle cx="32" cy="32" r="22" fill="url(#rb)" />
+  <path d="M22 40V24h8.5c4.2 0 7 2 7 5.4 0 2.3-1.1 3.9-3.1 4.7l4.4 6.9h-5.2l-3.7-6.1H26v6.1h-4zm4-9.7h4.1c1.9 0 3-.8 3-2.4 0-1.5-1.1-2.3-3-2.3H26v4.7zm17.8 9.7c-2.9 0-4.8-1.2-6-3.3l3.4-1.9c.7 1.1 1.6 1.7 2.9 1.7 1.5 0 2.4-.7 2.4-1.8 0-1.2-.8-1.8-3.3-2.4-3.4-.8-5-2.3-5-4.9 0-2.9 2.2-4.9 5.8-4.9 2.6 0 4.5 1 5.8 3l-3.3 2c-.6-.9-1.4-1.4-2.5-1.4-1.3 0-2.1.6-2.1 1.5 0 1 .9 1.4 3.2 2 3.6.9 5.1 2.5 5.1 5 0 3.1-2.4 5.4-6.4 5.4z" fill="#0f172a" />
+</svg>"""
+
+
+def favicon_response() -> Response:
+    favicon_path = Path(__file__).with_name("public") / "favicon.svg"
+    if favicon_path.exists():
+        return FileResponse(os.fspath(favicon_path), media_type="image/svg+xml")
+    return Response(FAVICON_SVG, media_type="image/svg+xml")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.png", include_in_schema=False)
+def favicon():
+    return favicon_response()
+
+
 # Serve the dashboard at both `/` and `/start` so direct bookmarks stay lightweight.
 @app.get("/start", response_class=HTMLResponse)
 @app.get("/", response_class=HTMLResponse)
@@ -4280,6 +4307,7 @@ def dashboard():
     <head>
       <title>Riders Bay Saddle Fit Agent</title>
       <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
       <style>
         :root {{
           --bg: #f6f8fb;
