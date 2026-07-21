@@ -1,0 +1,71 @@
+{
+  "analysis_id": "68777ad9-5086-4a67-a207-51116ad6d61a",
+  "horse_scheme": "high_wither",
+  "saddle_type": "english",
+  "video_filename": "videoplayback (2).mp4",
+  "metrics": {
+    "pitch_mean_deg": 153.21926412865713,
+    "pitch_std_deg": 71.92378988372981,
+    "rock_amplitude_deg": 24.160302604800904,
+    "mid_drift_x_px": 72.0036506652832,
+    "mid_drift_y_px": 98.98251342773438,
+    "backline_mean_deg": 41.58991040456351,
+    "backline_std_deg": 58.14565727118092,
+    "shoulder_level_std_px": 5.856432848218616,
+    "hip_level_std_px": 7.306786484851294,
+    "shoulder_span_mean_px": -11.470933857545807,
+    "hip_span_mean_px": 31.069847497664522,
+    "cadence_hz": 0.75,
+    "frames_analyzed": 112.0,
+    "duration_sec": 7.3999999999999995
+  },
+  "scores": {
+    "saddle_stability": 0,
+    "fit_risk": "High",
+    "rider_score": 35,
+    "rider_level": "Beginner"
+  },
+  "flags": [
+    "Higher saddle rocking detected (oscillation over stride).",
+    "Noticeable saddle drift detected (forward/back or sliding)."
+  ],
+  "recommendations": [
+    "Check panel contact (bridging risk). Try different girthing, pad, or consult saddle fitter.",
+    "Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions.",
+    "Rider level estimate: Beginner (35/100). Focus on steady shoulders/hips and straight lines."
+  ],
+  "calibration_points": {
+    "saddle_front": [
+      144.1011235955056,
+      298.770333154882
+    ],
+    "saddle_rear": [
+      53.764044943820224,
+      299.1076885063625
+    ],
+    "withers": [
+      192.64044943820224,
+      284.9387637441832
+    ],
+    "croup": [
+      232.41573033707866,
+      323.0599184614751
+    ],
+    "left_shoulder": [
+      138.03370786516854,
+      231.63661821027057
+    ],
+    "right_shoulder": [
+      132.64044943820224,
+      211.39529712144298
+    ],
+    "left_hip": [
+      71.29213483146067,
+      279.20372276901537
+    ],
+    "right_hip": [
+      120.84269662921348,
+      279.20372276901537
+    ]
+  }
+}

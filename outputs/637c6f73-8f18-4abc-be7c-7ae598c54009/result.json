@@ -1,0 +1,73 @@
+{
+  "analysis_id": "637c6f73-8f18-4abc-be7c-7ae598c54009",
+  "horse_scheme": "mounted_archery",
+  "saddle_type": "english",
+  "video_filename": "videoplayback (3).mp4",
+  "metrics": {
+    "pitch_mean_deg": 158.22652754528332,
+    "pitch_std_deg": 60.58808958088672,
+    "rock_amplitude_deg": 0.0,
+    "mid_drift_x_px": 67.43565368652344,
+    "mid_drift_y_px": 78.75068664550781,
+    "backline_mean_deg": -40.927679539002604,
+    "backline_std_deg": 12.613178722309662,
+    "shoulder_level_std_px": 138.20690095566852,
+    "hip_level_std_px": 94.6177239431376,
+    "shoulder_span_mean_px": -166.44829771878585,
+    "hip_span_mean_px": 287.0260197643964,
+    "cadence_hz": 0.0,
+    "frames_analyzed": 212.0,
+    "duration_sec": 14.066666666666666
+  },
+  "scores": {
+    "saddle_stability": 0,
+    "fit_risk": "High",
+    "rider_score": 17,
+    "rider_level": "Beginner"
+  },
+  "flags": [
+    "Noticeable saddle drift detected (forward/back or sliding).",
+    "Shoulder/hip alignment variance detected (uneven rider balance)."
+  ],
+  "recommendations": [
+    "Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions.",
+    "Coach note: work on even weight in both stirrups; ride straight lines and check saddle straightness.",
+    "Cadence not detected (short video or limited motion); film 30-60s with consistent trot/canter for rhythm.",
+    "Rider level estimate: Beginner (17/100). Focus on steady shoulders/hips and straight lines."
+  ],
+  "calibration_points": {
+    "saddle_front": [
+      227.9,
+      184.0
+    ],
+    "saddle_rear": [
+      190.1,
+      184.0
+    ],
+    "withers": [
+      141.0,
+      180.0
+    ],
+    "croup": [
+      277.0,
+      124.0
+    ],
+    "left_shoulder": [
+      123.0,
+      190.0
+    ],
+    "right_shoulder": [
+      159.0,
+      190.0
+    ],
+    "left_hip": [
+      259.0,
+      134.0
+    ],
+    "right_hip": [
+      295.0,
+      134.0
+    ]
+  },
+  "auto_detect_confidence": 0.30616753472222225
+}

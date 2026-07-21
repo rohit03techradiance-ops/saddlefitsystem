@@ -1,0 +1,68 @@
+{
+  "analysis_id": "551dc173-4379-4705-8692-aa86aa72217c",
+  "horse_scheme": "round_barrel",
+  "saddle_type": "english",
+  "video_filename": "videoplayback (2).mp4",
+  "metrics": {
+    "pitch_mean_deg": 180.0,
+    "pitch_std_deg": 0.0,
+    "rock_amplitude_deg": 0.0,
+    "mid_drift_x_px": 0.0,
+    "mid_drift_y_px": 0.0,
+    "backline_mean_deg": -0.6145682651229656,
+    "backline_std_deg": 0.5665081229193315,
+    "shoulder_level_std_px": 0.01182772412157925,
+    "hip_level_std_px": 0.7340352527319084,
+    "shoulder_span_mean_px": 2.7015338284628734,
+    "hip_span_mean_px": 69.12196459089007,
+    "cadence_hz": 0.0,
+    "frames_analyzed": 112.0,
+    "duration_sec": 7.3999999999999995
+  },
+  "scores": {
+    "saddle_stability": 0,
+    "fit_risk": "Low",
+    "rider_score": 99,
+    "rider_level": "Advanced"
+  },
+  "flags": [],
+  "recommendations": [
+    "Cadence not detected (short video or limited motion); film 30-60s with consistent trot/canter for rhythm.",
+    "Rider level estimate: Advanced (99/100). Focus on steady shoulders/hips and straight lines."
+  ],
+  "calibration_points": {
+    "saddle_front": [
+      138.0,
+      32.0
+    ],
+    "saddle_rear": [
+      102.0,
+      32.0
+    ],
+    "withers": [
+      0.0,
+      0.0
+    ],
+    "croup": [
+      240.0,
+      0.0
+    ],
+    "left_shoulder": [
+      0.0,
+      10.0
+    ],
+    "right_shoulder": [
+      18.0,
+      10.0
+    ],
+    "left_hip": [
+      222.0,
+      10.0
+    ],
+    "right_hip": [
+      258.0,
+      10.0
+    ]
+  },
+  "auto_detect_confidence": 0.20109375
+}

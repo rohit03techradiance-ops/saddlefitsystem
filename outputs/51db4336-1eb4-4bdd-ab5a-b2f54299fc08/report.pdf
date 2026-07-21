@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 2440 >>
+stream
+BT
+/F1 16 Tf
+72 760 Td
+(Saddle Fit Report \(lite\)) Tj
+/F1 11 Tf
+0 -16 Td
+(ID: 51db4336-1eb4-4bdd-ab5a-b2f54299fc08) Tj
+0 -16 Td
+(Scheme: high_wither | Saddle: english) Tj
+0 -16 Td
+(Stability: 0 \(Needs Attention\)) Tj
+0 -16 Td
+(Fit risk: High) Tj
+0 -16 Td
+(Rider: Beginner \(0/100\)) Tj
+0 -16 Td
+(Warnings: Front-down pitch trend detected \(saddle may be tipping forward\).; Higher saddle rocking detected \(oscillation over stride\).; Noticeable saddle drift detected \(forward/back or sliding\).; Shoulder/hip alignment variance detected \(uneven rider balance\).; Higher vertical bounce detected in saddle midpoint.; Rear vs front clearance variation suggests bridging tendency.) Tj
+0 -16 Td
+(Tracking: 13.4% over 1125 frames) Tj
+0 -16 Td
+(Pitch mean/std: -165.14/44.45 deg) Tj
+0 -16 Td
+(Rock amplitude: 43.67 deg) Tj
+0 -16 Td
+(Drift X: 303.15 px \(backward\)) Tj
+0 -16 Td
+(Withers clearance min: 185.76 px) Tj
+0 -16 Td
+(Gear used: helmet -; boots -; pad -; girth -; breastplate -) Tj
+0 -16 Td
+(Detected: helmet unknown \(0%\); boots unknown \(0%\); pad unknown \(0%\); girth unknown \(0%\); breastplate unknown \(0%\); crupper unknown \(0%\); stirrups unknown \(0%\)) Tj
+0 -16 Td
+(Detection notes: Pose landmarks unavailable; gear auto-detect limited.) Tj
+0 -16 Td
+(Recommendations: Check withers clearance + front balance. Consider fitter check or front pad/shim if appropriate.; Check panel contact \(bridging risk\). Try different girthing, pad, or consult saddle fitter.; Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions.; Coach note: work on even weight in both stirrups; ride straight lines and check saddle straightness.; Focus on core engagement and softer landing in the saddle to reduce bounce.; Evaluate panel contact; consider shim or refit to reduce bridging.; Cadence not detected \(short video or limited motion\); film 30-60s with consistent trot/canter for rhythm.; Rider level estimate: Beginner \(0/100\). Focus on steady shoulders/hips and straight lines.) Tj
+0 -16 Td
+(Doing well: Withers clearance maintained through the ride.) Tj
+0 -16 Td
+(To improve: Reduce vertical bounce by engaging core and following the motion.; Equalize weight in both stirrups to level shoulders/hips.; Improve saddle stability with tack adjustments or pad choice.) Tj
+0 -16 Td
+(Top tip: Check withers clearance + front balance. Consider fitter check or front pad/shim if appropriate.) Tj
+ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000002733 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2803
+%%EOF

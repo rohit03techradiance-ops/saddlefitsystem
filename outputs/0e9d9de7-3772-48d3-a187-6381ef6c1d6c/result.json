@@ -1,0 +1,47 @@
+{
+  "analysis_id": "0e9d9de7-3772-48d3-a187-6381ef6c1d6c",
+  "horse_scheme": "high_wither",
+  "saddle_type": "english",
+  "video_filename": "videoplayback (2).mp4",
+  "metrics": {
+    "pitch_mean_deg": -21.648212072360987,
+    "pitch_std_deg": 98.34040109227483,
+    "rock_amplitude_deg": 254.04495821130143,
+    "mid_drift_x_px": 34.1171989440918,
+    "mid_drift_y_px": 9.345703487846313,
+    "backline_mean_deg": -99.87051788080569,
+    "backline_std_deg": 11.093273786819113,
+    "frames_analyzed": 112.0,
+    "duration_sec": 7.3999999999999995
+  },
+  "scores": {
+    "saddle_stability": 0,
+    "fit_risk": "High"
+  },
+  "flags": [
+    "Front-down pitch trend detected (saddle may be tipping forward).",
+    "Higher saddle rocking detected (oscillation over stride)."
+  ],
+  "recommendations": [
+    "Check withers clearance + front balance. Consider fitter check or front pad/shim if appropriate.",
+    "Check panel contact (bridging risk). Try different girthing, pad, or consult saddle fitter."
+  ],
+  "calibration_points": {
+    "saddle_front": [
+      139.7191011235955,
+      -0.06325412840258618
+    ],
+    "saddle_rear": [
+      141.06741573033707,
+      6.009142198245686
+    ],
+    "withers": [
+      141.06741573033707,
+      80.22731952394679
+    ],
+    "croup": [
+      143.42696629213484,
+      7.021208252687065
+    ]
+  }
+}

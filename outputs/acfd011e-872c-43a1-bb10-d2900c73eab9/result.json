@@ -1,0 +1,74 @@
+{
+  "analysis_id": "acfd011e-872c-43a1-bb10-d2900c73eab9",
+  "horse_scheme": "mounted_archery",
+  "saddle_type": "english",
+  "video_filename": "videoplayback (3).mp4",
+  "metrics": {
+    "pitch_mean_deg": 84.72705898112697,
+    "pitch_std_deg": 10.379835630284974,
+    "rock_amplitude_deg": 30.171859794269146,
+    "mid_drift_x_px": 160.9047794342041,
+    "mid_drift_y_px": 88.63888549804688,
+    "backline_mean_deg": -112.8279294780967,
+    "backline_std_deg": 6.874508276487959,
+    "shoulder_level_std_px": 26.719905925512663,
+    "hip_level_std_px": 160.15832863370179,
+    "shoulder_span_mean_px": -32.38960776929004,
+    "hip_span_mean_px": 200.11010029049578,
+    "cadence_hz": 0.0,
+    "frames_analyzed": 212.0,
+    "duration_sec": 14.066666666666666
+  },
+  "scores": {
+    "saddle_stability": 0,
+    "fit_risk": "High",
+    "rider_score": 1,
+    "rider_level": "Beginner"
+  },
+  "flags": [
+    "Higher saddle rocking detected (oscillation over stride).",
+    "Noticeable saddle drift detected (forward/back or sliding).",
+    "Shoulder/hip alignment variance detected (uneven rider balance)."
+  ],
+  "recommendations": [
+    "Check panel contact (bridging risk). Try different girthing, pad, or consult saddle fitter.",
+    "Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions.",
+    "Coach note: work on even weight in both stirrups; ride straight lines and check saddle straightness.",
+    "Cadence not detected (short video or limited motion); film 30-60s with consistent trot/canter for rhythm.",
+    "Rider level estimate: Beginner (1/100). Focus on steady shoulders/hips and straight lines."
+  ],
+  "calibration_points": {
+    "saddle_front": [
+      160.95505617977528,
+      301.4691759667257
+    ],
+    "saddle_rear": [
+      215.8988764044944,
+      332.84322365440846
+    ],
+    "withers": [
+      159.2696629213483,
+      369.2776016142981
+    ],
+    "croup": [
+      148.14606741573033,
+      191.49133138409587
+    ],
+    "left_shoulder": [
+      207.47191011235955,
+      181.03331548820162
+    ],
+    "right_shoulder": [
+      105.33707865168539,
+      358.4822303669234
+    ],
+    "left_hip": [
+      194.3258426966292,
+      285.27611909566366
+    ],
+    "right_hip": [
+      149.1573033707865,
+      274.48074784828896
+    ]
+  }
+}

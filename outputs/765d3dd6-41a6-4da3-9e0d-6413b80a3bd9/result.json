@@ -1,0 +1,47 @@
+{
+  "analysis_id": "765d3dd6-41a6-4da3-9e0d-6413b80a3bd9",
+  "horse_scheme": "high_wither",
+  "saddle_type": "english",
+  "video_filename": "videoplayback (2).mp4",
+  "metrics": {
+    "pitch_mean_deg": 128.4411026169558,
+    "pitch_std_deg": 11.637168251071696,
+    "rock_amplitude_deg": 36.692269080495635,
+    "mid_drift_x_px": 76.38418388366699,
+    "mid_drift_y_px": 107.62920379638672,
+    "backline_mean_deg": 56.462186391585455,
+    "backline_std_deg": 24.700154397543425,
+    "frames_analyzed": 112.0,
+    "duration_sec": 7.3999999999999995
+  },
+  "scores": {
+    "saddle_stability": 0,
+    "fit_risk": "High"
+  },
+  "flags": [
+    "Higher saddle rocking detected (oscillation over stride).",
+    "Noticeable saddle drift detected (forward/back or sliding)."
+  ],
+  "recommendations": [
+    "Check panel contact (bridging risk). Try different girthing, pad, or consult saddle fitter.",
+    "Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions."
+  ],
+  "calibration_points": {
+    "saddle_front": [
+      146.34880803011293,
+      296.10094832249587
+    ],
+    "saddle_rear": [
+      74.07779171894605,
+      330.46753734226826
+    ],
+    "withers": [
+      200.1003764115433,
+      291.1268367538446
+    ],
+    "croup": [
+      263.33751568381433,
+      316.4495865578874
+    ]
+  }
+}

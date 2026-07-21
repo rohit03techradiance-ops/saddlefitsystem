@@ -1,0 +1,17 @@
+{
+  "analysis_id": "bbafc997-7193-4312-bbce-c686c55f2946",
+  "video_filename": "videoplayback (3).mp4",
+  "horse_scheme": "mounted_archery",
+  "saddle_type": "english",
+  "gear": {
+    "helmet": "yes",
+    "boots": "yes",
+    "pad": "normal",
+    "girth": "standard",
+    "breastplate": "no",
+    "crupper": "no",
+    "stirrups": "medium"
+  },
+  "frame_width": 360,
+  "frame_height": 640
+}

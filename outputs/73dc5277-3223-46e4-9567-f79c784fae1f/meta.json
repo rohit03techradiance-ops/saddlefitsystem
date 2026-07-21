@@ -1,0 +1,50 @@
+{
+  "analysis_id": "73dc5277-3223-46e4-9567-f79c784fae1f",
+  "video_filename": "videoplayback (1).mp4",
+  "horse_scheme": "high_wither",
+  "saddle_type": "english",
+  "gear": {
+    "helmet": "yes",
+    "boots": "yes",
+    "pad": "normal",
+    "girth": "standard",
+    "breastplate": "no",
+    "crupper": "no",
+    "stirrups": "medium"
+  },
+  "gear_detection": {
+    "gear": {
+      "helmet": "unknown",
+      "boots": "unknown",
+      "pad": "unknown",
+      "girth": "unknown",
+      "breastplate": "unknown",
+      "crupper": "unknown",
+      "stirrups": "unknown"
+    },
+    "confidences": {
+      "helmet": 0.0,
+      "boots": 0.0,
+      "pad": 0.0,
+      "girth": 0.0,
+      "breastplate": 0.0,
+      "crupper": 0.0,
+      "stirrups": 0.0
+    },
+    "notes": [
+      "Pose landmarks unavailable; gear auto-detect limited."
+    ],
+    "method": "frame_only"
+  },
+  "gear_used": {
+    "helmet": "yes",
+    "boots": "yes",
+    "pad": "normal",
+    "girth": "standard",
+    "breastplate": "no",
+    "crupper": "no",
+    "stirrups": "medium"
+  },
+  "frame_width": 640,
+  "frame_height": 360
+}

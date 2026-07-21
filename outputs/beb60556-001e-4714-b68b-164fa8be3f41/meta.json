@@ -1,0 +1,17 @@
+{
+  "analysis_id": "beb60556-001e-4714-b68b-164fa8be3f41",
+  "video_filename": "videoplayback (2).mp4",
+  "horse_scheme": "high_wither",
+  "saddle_type": "english",
+  "gear": {
+    "helmet": "yes",
+    "boots": "yes",
+    "pad": "normal",
+    "girth": "standard",
+    "breastplate": "no",
+    "crupper": "no",
+    "stirrups": "medium"
+  },
+  "frame_width": 360,
+  "frame_height": 640
+}

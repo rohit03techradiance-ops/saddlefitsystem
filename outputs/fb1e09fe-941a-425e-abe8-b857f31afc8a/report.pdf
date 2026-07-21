@@ -1,0 +1,62 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 833 >>
+stream
+BT
+/F1 16 Tf
+72 760 Td
+(Saddle Fit Report) Tj
+/F1 12 Tf
+0 -18 Td
+(ID: fb1e09fe-941a-425e-abe8-b857f31afc8a) Tj
+0 -18 Td
+(Scheme: mounted_archery | Saddle: english) Tj
+0 -18 Td
+(Stability: 0 \(Needs Attention\)) Tj
+0 -18 Td
+(Fit risk: High) Tj
+0 -18 Td
+(Rider: Beginner \(17/100\)) Tj
+0 -18 Td
+(Warnings: Noticeable saddle drift detected \(forward/back or sliding\).; Shoulder/hip alignment variance detected \(uneven rider balance\).; Higher vertical bounce detected in saddle midpoint.) Tj
+0 -18 Td
+(Tracking: 17.4% over 212 frames) Tj
+0 -18 Td
+(Pitch mean/std: 158.23/60.59 deg) Tj
+0 -18 Td
+(Rock amplitude: 0.00 deg) Tj
+0 -18 Td
+(Drift X: 67.44 px \(stable\)) Tj
+0 -18 Td
+(Withers clearance min: 86.99 px) Tj
+0 -18 Td
+(Top tip: Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions.) Tj
+ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001125 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1195
+%%EOF

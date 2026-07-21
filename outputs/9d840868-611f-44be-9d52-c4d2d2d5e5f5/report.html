@@ -1,0 +1,349 @@
+
+    <html>
+    <head>
+      <title>Saddle Fit Report - 9d840868-611f-44be-9d52-c4d2d2d5e5f5</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <style>
+        body { font-family: Arial; margin:0; background:#0b1220; color:#e5e7eb; }
+        .wrap { max-width: 1080px; margin: 0 auto; padding: 20px 16px; }
+        .card { padding: 16px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); margin-top: 12px; }
+        .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+        .k { color:#cbd5e1; font-size: 13px; }
+        .v { font-size: 22px; font-weight: 800; }
+        .pill { display:inline-block; padding: 6px 10px; border-radius: 999px; background: rgba(34,197,94,0.18); border: 1px solid rgba(34,197,94,0.35); }
+        a { color:#60a5fa; }
+        ul { margin: 8px 0 0 18px; }
+        table { width:100%; border-collapse: collapse; margin-top: 10px; }
+        td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.10); }
+        h2, h3 { margin: 0; }
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <h2 style="margin:0;">Saddle Fit Analysis Report</h2>
+        <div style="margin-top:8px;">
+          <span class="pill">ID: 9d840868-611f-44be-9d52-c4d2d2d5e5f5</span>
+          <span class="pill">Scheme: high_wither</span>
+          <span class="pill">Saddle: english</span>
+        </div>
+
+        <div class="card grid">
+          <div>
+            <div class="k">Saddle Stability</div>
+            <div class="v">0/100</div>
+          </div>
+          <div>
+            <div class="k">Fit Risk</div>
+            <div class="v">Medium</div>
+          </div>
+          <div>
+            <div class="k">Rider Level</div>
+            <div class="v">Advanced (99/100)</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Simple Summary</h3>
+          <p class="k" style="margin:6px 0 10px;">Quick takeaways in plain language.</p>
+          <ul>
+            <li>Overall stability: <b>Needs Attention</b> (score 0/100).</li>
+            <li>Fit risk: <b>Medium</b>; rider level: <b>Advanced</b> (99/100).</li>
+            <li>Warnings: Rear vs front clearance variation suggests bridging tendency.</li>
+            <li>Video quality check: 9.9% tracking across 112 frames.</li>
+            <li>Next step: Evaluate panel contact; consider shim or refit to reduce bridging.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3>Saddle Stability Metrics</h3>
+          <table>
+            <tr><td>Pitch mean (deg)</td><td>180.00</td></tr>
+            <tr><td>Pitch std (deg)</td><td>0.00</td></tr>
+            <tr><td>Rocking amplitude (deg, P5-95)</td><td>0.00</td></tr>
+            <tr><td>Midpoint drift X (px)</td><td>0.00 (stable)</td></tr>
+            <tr><td>Midpoint drift rate (px/sec)</td><td>0.00</td></tr>
+            <tr><td>Vertical bounce (px)</td><td>0.00</td></tr>
+            <tr><td>Cadence / stride freq (Hz)</td><td>0.00</td></tr>
+            <tr><td>Duration (sec)</td><td>7.40</td></tr>
+            <tr><td>Frames analyzed</td><td>112</td></tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Alignment Metrics</h3>
+          <table>
+            <tr><td>Topline angle mean / std (deg)</td><td>-0.61 / 0.57</td></tr>
+            <tr><td>Saddle vs topline alignment (deg)</td><td>180.61</td></tr>
+            <tr><td>Withers clearance min / mean / std (px)</td><td>117.19 / 126.82 / 2.71</td></tr>
+            <tr><td>Clearance collapse warning</td><td>No</td></tr>
+            <tr><td>Bridging tendency proxy</td><td>45.94</td></tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Symmetry Metrics (with confidence)</h3>
+          <table>
+            <tr><td>Rider shoulder diff mean / std (px)</td><td>0.09 / 0.01</td></tr>
+            <tr><td>Rider hip diff mean / std (px)</td><td>-1.48 / 0.73</td></tr>
+            <tr><td>Rider lean consistency (std deg)</td><td>0.28</td></tr>
+            <tr><td>Saddle roll proxy</td><td>0.75 (conf 9.9%)</td></tr>
+            <tr><td>Horse topline std (deg)</td><td>0.57</td></tr>
+            <tr><td>Confidence note</td><td>Side-view only; lateral symmetry not observed.</td></tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Trend (Line Graph)</h3>
+          <div class="k" style="margin-bottom:6px;">Pitch and drift over time</div>
+          <canvas id="lineChart" width="960" height="300" style="width:100%; border-radius:12px; border:1px solid rgba(255,255,255,0.10); background:rgba(255,255,255,0.02);"></canvas>
+          <div id="lineLegend" class="k" style="margin-top:6px; display:flex; gap:12px; align-items:center;">
+            <span style="display:flex; align-items:center; gap:6px;"><span style="width:14px; height:6px; background:#38bdf8; display:inline-block;"></span>Pitch</span>
+            <span style="display:flex; align-items:center; gap:6px;"><span style="width:14px; height:6px; background:#22c55e; display:inline-block;"></span>Drift X</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Flags</h3>
+          <ul><li>Rear vs front clearance variation suggests bridging tendency.</li></ul>
+        </div>
+
+        <div class="card">
+          <h3>Recommendations & Coaching</h3>
+          <div class="grid">
+            <div>
+              <div class="k" style="margin-bottom:6px;">What you're doing well</div>
+              <ul><li>Stable rocking across strides.</li><li>Minimal forward/back drift observed.</li><li>Withers clearance maintained through the ride.</li></ul>
+              <div class="k" style="margin-top:10px;">Overall recommendations</div>
+              <ul><li>Evaluate panel contact; consider shim or refit to reduce bridging.</li><li>Cadence not detected (short video or limited motion); film 30-60s with consistent trot/canter for rhythm.</li><li>Rider level estimate: Advanced (99/100). Focus on steady shoulders/hips and straight lines.</li></ul>
+            </div>
+            <div>
+              <div class="k" style="margin-bottom:6px;">What to improve</div>
+              <p class='k'>No improvements listed.</p>
+              <div class="k" style="margin-top:10px;">3 drills for next session</div>
+              <ol><li>Posting trot with light contact: focus on even shoulder height for 30s intervals.</li><li>Two-point over ground poles to stabilize core and reduce bounce.</li><li>Ride straight lines with visual markers to monitor drift and alignment.</li></ol>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Marks (0-10) & How to Improve</h3>
+          <table>
+            <tr><td>Stability</td><td>0.0/10</td><td>Reduce rocking and drift to raise stability.</td></tr><tr><td>Alignment</td><td>0.0/10</td><td>Balance saddle to match topline and keep even contact.</td></tr><tr><td>Symmetry</td><td>9.9/10</td><td>Level shoulders/hips and equalize stirrup pressure.</td></tr><tr><td>Rhythm</td><td>0.0/10</td><td>Keep steady tempo; use metronome or poles if needed.</td></tr><tr><td>Clearance</td><td>9.1/10</td><td>Maintain withers clearance; adjust pad/tree if low.</td></tr><tr><td>Tracking</td><td>1.0/10</td><td>Film steady side view for higher tracking confidence.</td></tr><tr><td>Bounce</td><td>10.0/10</td><td>Engage core and follow motion to reduce bounce.</td></tr><tr><td>Drift</td><td>10.0/10</td><td>Check girth, pad grip, and straightness to limit drift.</td></tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Gear & Safety Checklist</h3>
+          <div class="grid">
+            <div>
+              <div class="k">Status</div>
+              <div class="v">PASS</div>
+              <div class="k" style="margin-top:6px;">Used for analysis</div>
+              <ul>
+                <li>Helmet: </li>
+                <li>Boots: </li>
+                <li>Pad: </li>
+                <li>Girth: </li>
+                <li>Breastplate: </li>
+                <li>Crupper: </li>
+                <li>Stirrups: </li>
+              </ul>
+            </div>
+            <div>
+              <div class="k">Auto-detected from video</div>
+              <ul><li>Helmet: unknown (conf 0%)</li><li>Boots: unknown (conf 0%)</li><li>Pad: unknown (conf 0%)</li><li>Girth: unknown (conf 0%)</li><li>Breastplate: unknown (conf 0%)</li><li>Crupper: unknown (conf 0%)</li><li>Stirrups: unknown (conf 0%)</li></ul>
+              <div class="k" style="margin-top:10px;">Detection notes</div>
+              <ul><li>Pose landmarks unavailable; gear auto-detect limited.</li></ul>
+              <div class="k">Notes</div>
+              <p class='k'>No gear notes.</p>
+              <div class="k" style="margin-top:10px;">Recommendations</div>
+              <p class='k'>No gear recommendations.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Tracking Confidence & Video Quality</h3>
+          <ul>
+            <li>Tracking success: 9.9%</li>
+            <li>Frames processed: 112; Reinitializations: 0</li>
+            <li>Confidence note: higher % implies better reliability of symmetry claims; side-view only limits roll detection.</li>
+          </ul>
+        </div>
+
+        
+
+        <div class="card">
+          <h3>Visual Aids</h3>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; align-items:flex-start;">
+            <div>
+              <div class="k" style="margin-bottom:6px;">Rider posture (balanced vs detected)</div>
+              <div style="max-width:260px;"><svg width='220' height='150' viewBox='0 0 380 214' xmlns='http://www.w3.org/2000/svg' style='background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.08); border-radius:12px;'><circle cx='110' cy='34.0' r='12' fill='#22c55e' fill-opacity='0.12' stroke='#22c55e' stroke-width='3' /><line x1='110' y1='64.0' x2='110.0' y2='130.0' stroke='#22c55e' stroke-width='6' stroke-linecap='round' /><line x1='76.0' y1='74.0' x2='144.0' y2='74.0' stroke='#22c55e' stroke-width='5' stroke-linecap='round' /><line x1='110.0' y1='130.0' x2='86.0' y2='184.0' stroke='#22c55e' stroke-width='5' stroke-linecap='round' /><line x1='110.0' y1='130.0' x2='134.0' y2='184.0' stroke='#22c55e' stroke-width='5' stroke-linecap='round' /><text x='110' y='200.0' fill='#22c55e' font-size='12' text-anchor='middle'>Balanced</text><circle cx='270' cy='34.0' r='12' fill='#f59e0b' fill-opacity='0.12' stroke='#f59e0b' stroke-width='3' /><line x1='270' y1='64.0' x2='281.2' y2='130.0' stroke='#f59e0b' stroke-width='6' stroke-linecap='round' /><line x1='236.0' y1='74.0' x2='304.0' y2='70.08' stroke='#f59e0b' stroke-width='5' stroke-linecap='round' /><line x1='281.2' y1='130.0' x2='257.2' y2='184.0' stroke='#f59e0b' stroke-width='5' stroke-linecap='round' /><line x1='281.2' y1='130.0' x2='305.2' y2='184.0' stroke='#f59e0b' stroke-width='5' stroke-linecap='round' /><text x='270' y='200.0' fill='#f59e0b' font-size='12' text-anchor='middle'>Detected</text></svg></div>
+            </div>
+            <div>
+              <div class="k" style="margin-bottom:6px;">Growth chart</div>
+              <div style="max-width:260px;"><svg width='220' height='150' viewBox='0 0 390 170' xmlns='http://www.w3.org/2000/svg' style='background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.08); border-radius:12px;'><line x1='24' y1='140' x2='330' y2='140' stroke='rgba(255,255,255,0.15)' stroke-dasharray='4 6' /><polyline fill='none' stroke='#38bdf8' stroke-width='3' points='40,140.0 85,21.200000000000003 130,140.0 175,140.0 220,20.0 265,20.0 310,22.98345190741395' /><circle cx='40' cy='140.0' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><circle cx='85' cy='21.200000000000003' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><circle cx='130' cy='140.0' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><circle cx='175' cy='140.0' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><circle cx='220' cy='20.0' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><circle cx='265' cy='20.0' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><circle cx='310' cy='22.98345190741395' r='6' fill='#60a5fa' stroke='#0ea5e9' stroke-width='2' /><text x='40' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Stability</text><text x='40' y='130.0' fill='#e5e7eb' font-size='11' text-anchor='middle'>0</text><text x='85' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Rider</text><text x='85' y='11.200000000000003' fill='#e5e7eb' font-size='11' text-anchor='middle'>99</text><text x='130' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Cadence</text><text x='130' y='130.0' fill='#e5e7eb' font-size='11' text-anchor='middle'>0</text><text x='175' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Pitch</text><text x='175' y='130.0' fill='#e5e7eb' font-size='11' text-anchor='middle'>0</text><text x='220' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Rock</text><text x='220' y='10.0' fill='#e5e7eb' font-size='11' text-anchor='middle'>100</text><text x='265' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Drift</text><text x='265' y='10.0' fill='#e5e7eb' font-size='11' text-anchor='middle'>100</text><text x='310' y='158' fill='#cbd5e1' font-size='11' text-anchor='middle'>Symmetry</text><text x='310' y='12.98345190741395' fill='#e5e7eb' font-size='11' text-anchor='middle'>98</text></svg></div>
+            </div>
+            <div>
+              <div class="k" style="margin-bottom:6px;">Marks (0-10) by area</div>
+              <div style="max-width:260px;"><svg width='220' height='150' viewBox='0 0 392 170' xmlns='http://www.w3.org/2000/svg' style='background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.08); border-radius:12px;'><rect x='20' y='142.0' width='32' height='0.0' rx='6' fill='#38bdf8' /><rect x='64' y='142.0' width='32' height='0.0' rx='6' fill='#38bdf8' /><rect x='108' y='23.790071144448362' width='32' height='118.20992885555164' rx='6' fill='#38bdf8' /><rect x='152' y='142.0' width='32' height='0.0' rx='6' fill='#38bdf8' /><rect x='196' y='33.14640628237619' width='32' height='108.85359371762381' rx='6' fill='#38bdf8' /><rect x='240' y='130.1081081081081' width='32' height='11.891891891891891' rx='6' fill='#38bdf8' /><rect x='284' y='22.0' width='32' height='120.0' rx='6' fill='#38bdf8' /><rect x='328' y='22.0' width='32' height='120.0' rx='6' fill='#38bdf8' /><text x='36.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Stability</text><text x='36.0' y='136.0' font-size='10' fill='#e5e7eb' text-anchor='middle'>0.0</text><text x='80.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Alignment</text><text x='80.0' y='136.0' font-size='10' fill='#e5e7eb' text-anchor='middle'>0.0</text><text x='124.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Symmetry</text><text x='124.0' y='17.790071144448362' font-size='10' fill='#e5e7eb' text-anchor='middle'>9.9</text><text x='168.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Rhythm</text><text x='168.0' y='136.0' font-size='10' fill='#e5e7eb' text-anchor='middle'>0.0</text><text x='212.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Clearance</text><text x='212.0' y='27.14640628237619' font-size='10' fill='#e5e7eb' text-anchor='middle'>9.1</text><text x='256.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Tracking</text><text x='256.0' y='124.1081081081081' font-size='10' fill='#e5e7eb' text-anchor='middle'>1.0</text><text x='300.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Bounce</text><text x='300.0' y='16.0' font-size='10' fill='#e5e7eb' text-anchor='middle'>10.0</text><text x='344.0' y='160' font-size='10' fill='#cbd5e1' text-anchor='middle'>Drift</text><text x='344.0' y='16.0' font-size='10' fill='#e5e7eb' text-anchor='middle'>10.0</text></svg></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Instruction Video</h3>
+          <div class="k" style="margin-bottom:6px;">Replay your ride (muted) while the assistant speaks the corrections.</div>
+          <video id="reportVideo" controls muted playsinline style="width:100%; max-width:640px; height:260px; margin:0 auto; display:block; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:#000;">
+            <source src="/video/9d840868-611f-44be-9d52-c4d2d2d5e5f5" type="video/mp4">
+            Your browser does not support video.
+          </video>
+          <button style="margin-top:12px; width:100%; background: linear-gradient(135deg,#60a5fa,#a78bfa);" onclick="playCoach()">Play muted video + voice tips</button>
+          <div class="k" style="margin-top:6px;">Video audio is muted automatically to avoid overlapping with the spoken instructions.</div>
+          <script>
+            const recText = "Evaluate panel contact; consider shim or refit to reduce bridging. Cadence not detected (short video or limited motion); film 30-60s with consistent trot/canter for rhythm. Rider level estimate: Advanced (99/100). Focus on steady shoulders/hips and straight lines.";
+            const seriesData = {"time": [0.0, 0.06666666666666667, 0.13333333333333333, 0.2, 0.26666666666666666, 0.3333333333333333, 0.4, 0.4666666666666667, 0.5333333333333333, 0.6, 0.6666666666666666, 0.7333333333333333, 0.8, 0.8666666666666667, 0.9333333333333333, 1.0, 1.0666666666666667, 1.1333333333333333, 1.2, 1.2666666666666666, 1.3333333333333333, 1.4, 1.4666666666666666, 1.5333333333333332, 1.6, 1.6666666666666667, 1.7333333333333334, 1.8, 1.8666666666666667, 1.9333333333333333, 2.0, 2.0666666666666664, 2.1333333333333333, 2.2, 2.2666666666666666, 2.3333333333333335, 2.4, 2.466666666666667, 2.533333333333333, 2.6, 2.6666666666666665, 2.7333333333333334, 2.8, 2.8666666666666667, 2.933333333333333, 3.0, 3.0666666666666664, 3.1333333333333333, 3.2, 3.2666666666666666, 3.3333333333333335, 3.4, 3.466666666666667, 3.533333333333333, 3.6, 3.6666666666666665, 3.7333333333333334, 3.8, 3.8666666666666667, 3.933333333333333, 4.0, 4.066666666666666, 4.133333333333333, 4.2, 4.266666666666667, 4.333333333333333, 4.4, 4.466666666666667, 4.533333333333333, 4.6, 4.666666666666667, 4.733333333333333, 4.8, 4.866666666666666, 4.933333333333334, 5.0, 5.066666666666666, 5.133333333333333, 5.2, 5.266666666666667, 5.333333333333333, 5.4, 5.466666666666667, 5.533333333333333, 5.6, 5.666666666666667, 5.733333333333333, 5.8, 5.866666666666666, 5.933333333333334, 6.0, 6.066666666666666, 6.133333333333333, 6.2, 6.266666666666667, 6.333333333333333, 6.4, 6.466666666666667, 6.533333333333333, 6.6, 6.666666666666667, 6.733333333333333, 6.8, 6.866666666666666, 6.933333333333334, 7.0, 7.066666666666666, 7.133333333333333, 7.2, 7.266666666666667, 7.333333333333333, 7.3999999999999995], "pitch": [180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0, 180.0], "drift_x": [120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0], "drift_y": [32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0, 32.0]};
+            const pdfUrl = "/report_pdf/9d840868-611f-44be-9d52-c4d2d2d5e5f5";
+
+            function playCoach() {
+              const vid = document.getElementById("reportVideo");
+              if (vid) {
+                vid.muted = true;
+                vid.defaultMuted = true;
+                vid.volume = 0.0;
+                try { vid.currentTime = 0; vid.play(); } catch (e) {}
+                const cues = [
+                  "Check posture: straighten upper back, open chest.",
+                  "Drop your heels, keep steady contact.",
+                  "Maintain even shoulders, avoid drifting forward."
+                ];
+                let spoken = 0;
+                vid.onended = () => spoken = cues.length;
+                vid.ontimeupdate = () => {
+                  if (!('speechSynthesis' in window) || !vid.duration) return;
+                  const t = vid.currentTime / vid.duration;
+                  if (t > 0.2 && spoken === 0) { speak("Coach: " + cues[0]); spoken = 1; }
+                  if (t > 0.5 && spoken === 1) { speak("Coach: " + cues[1]); spoken = 2; }
+                  if (t > 0.8 && spoken === 2) { speak("Coach: " + cues[2] + " " + recText); spoken = 3; }
+                };
+                speak("Coach tips: " + recText);
+              }
+            }
+
+            function speak(text) {
+              if (!('speechSynthesis' in window)) return;
+              const u = new SpeechSynthesisUtterance(text);
+              u.rate = 1.0;
+              window.speechSynthesis.cancel();
+              window.speechSynthesis.speak(u);
+            }
+
+            function downloadPdf() {
+              const link = document.createElement("a");
+              link.href = pdfUrl;
+              link.download = "report_9d840868-611f-44be-9d52-c4d2d2d5e5f5.pdf";
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }
+
+            function drawLineChart() {
+              const c = document.getElementById("lineChart");
+              if (!c) return;
+              const ctx = c.getContext("2d");
+              ctx.clearRect(0, 0, c.width, c.height);
+
+              const t = seriesData.time || [];
+              const pitch = seriesData.pitch || [];
+              const drift = seriesData.drift_x || [];
+              if (t.length === 0) return;
+
+              const pad = { left: 64, right: 64, top: 32, bottom: 46 };
+              const w = c.width - pad.left - pad.right;
+              const h = c.height - pad.top - pad.bottom;
+
+              const timeStart = t[0] || 0;
+              const timeEnd = t[t.length - 1] || 1;
+              const pitchMin = Math.min(...pitch);
+              const pitchMax = Math.max(...pitch);
+              const driftMin = Math.min(...drift);
+              const driftMax = Math.max(...drift);
+
+              const timeSpan = (timeEnd - timeStart) || 1;
+              const pitchRange = (pitchMax - pitchMin) || 1;
+              const driftRange = (driftMax - driftMin) || 1;
+
+              const xAt = (timeVal) => pad.left + ((timeVal - timeStart) / timeSpan) * w;
+              const yPitch = (val) => pad.top + (1 - (val - pitchMin) / pitchRange) * h;
+              const yDrift = (val) => pad.top + (1 - (val - driftMin) / driftRange) * h;
+
+              ctx.lineWidth = 1;
+              for (let i = 0; i <= 4; i++) {
+                const tTick = timeStart + timeSpan * (i / 4);
+                const x = xAt(tTick);
+                ctx.strokeStyle = "rgba(255,255,255,0.10)";
+                ctx.beginPath();
+                ctx.moveTo(x, pad.top);
+                ctx.lineTo(x, pad.top + h);
+                ctx.stroke();
+                ctx.fillStyle = "#cbd5e1";
+                ctx.font = "11px Arial";
+                ctx.fillText(tTick.toFixed(1) + "s", x - 14, pad.top + h + 18);
+              }
+              for (let i = 0; i <= 4; i++) {
+                const y = pad.top + (h * i / 4);
+                ctx.strokeStyle = i === 4 ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.10)";
+                ctx.beginPath();
+                ctx.moveTo(pad.left, y);
+                ctx.lineTo(pad.left + w, y);
+                ctx.stroke();
+                const pitchLabel = (pitchMax - pitchRange * (i / 4)).toFixed(1);
+                const driftLabel = (driftMax - driftRange * (i / 4)).toFixed(1);
+                ctx.fillStyle = "#cbd5e1";
+                ctx.font = "11px Arial";
+                ctx.fillText(pitchLabel, 10, y + 4);
+                ctx.fillText(driftLabel, c.width - pad.right + 8, y + 4);
+              }
+
+              ctx.strokeStyle = "rgba(255,255,255,0.18)";
+              ctx.strokeRect(pad.left, pad.top, w, h);
+
+              function drawSeries(data, yFn, color) {
+                ctx.beginPath();
+                data.forEach((v, i) => {
+                  const x = xAt(t[i] || timeStart);
+                  const y = yFn(v);
+                  if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                });
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2.2;
+                ctx.stroke();
+              }
+
+              drawSeries(pitch, yPitch, "#38bdf8");
+              drawSeries(drift, yDrift, "#22c55e");
+
+              ctx.fillStyle = "#cbd5e1";
+              ctx.font = "12px Arial";
+              ctx.fillText("time (sec)", pad.left + w / 2 - 34, c.height - 10);
+              ctx.fillText("pitch (deg)", pad.left - 56, pad.top - 10);
+              ctx.fillText("drift X (px)", c.width - pad.right + 2, pad.top - 10);
+            }
+
+            window.addEventListener("load", () => {
+              drawLineChart();
+            });
+          </script>
+        </div>
+
+        <div class="card">
+          <h3>Open Files</h3>
+          <div class="k" style="margin-bottom:6px;">Download simplified PDF</div>
+          <button style="padding:10px 14px; border-radius:10px; border:none; background: linear-gradient(135deg,#22c55e,#06b6d4); color:#04120a; font-weight:800; cursor:pointer;" onclick="downloadPdf()">Download PDF</button>
+          <div class="k" style="margin-top:6px;">If PDF fails, enable PDF support and retry.</div>
+          <div class="k" style="margin-top:10px;"><a href="/">Analyze another video</a></div>
+        </div>
+      </div>
+    </body>
+    </html>
+    

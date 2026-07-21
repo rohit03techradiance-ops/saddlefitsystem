@@ -1,0 +1,72 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 1480 >>
+stream
+BT
+/F1 16 Tf
+72 760 Td
+(Saddle Fit Report \(lite\)) Tj
+/F1 11 Tf
+0 -16 Td
+(ID: 521ba445-c1af-4c4c-9a72-3585c3702ddd) Tj
+0 -16 Td
+(Scheme: high_wither | Saddle: english) Tj
+0 -16 Td
+(Stability: 0 \(Needs Attention\)) Tj
+0 -16 Td
+(Fit risk: Medium) Tj
+0 -16 Td
+(Rider: Advanced \(99/100\)) Tj
+0 -16 Td
+(Warnings: Rear vs front clearance variation suggests bridging tendency.) Tj
+0 -16 Td
+(Tracking: 9.9% over 112 frames) Tj
+0 -16 Td
+(Pitch mean/std: 180.00/0.00 deg) Tj
+0 -16 Td
+(Rock amplitude: 0.00 deg) Tj
+0 -16 Td
+(Drift X: 0.00 px \(stable\)) Tj
+0 -16 Td
+(Withers clearance min: 117.19 px) Tj
+0 -16 Td
+(Gear used: helmet -; boots -; pad -; girth -; breastplate -) Tj
+0 -16 Td
+(Detected: helmet unknown \(0%\); boots unknown \(0%\); pad unknown \(0%\); girth unknown \(0%\); breastplate unknown \(0%\); crupper unknown \(0%\); stirrups unknown \(0%\)) Tj
+0 -16 Td
+(Detection notes: Pose landmarks unavailable; gear auto-detect limited.) Tj
+0 -16 Td
+(Recommendations: Evaluate panel contact; consider shim or refit to reduce bridging.; Cadence not detected \(short video or limited motion\); film 30-60s with consistent trot/canter for rhythm.; Rider level estimate: Advanced \(99/100\). Focus on steady shoulders/hips and straight lines.) Tj
+0 -16 Td
+(Doing well: Stable rocking across strides.; Minimal forward/back drift observed.; Withers clearance maintained through the ride.) Tj
+0 -16 Td
+(Top tip: Evaluate panel contact; consider shim or refit to reduce bridging.) Tj
+ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001773 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1843
+%%EOF

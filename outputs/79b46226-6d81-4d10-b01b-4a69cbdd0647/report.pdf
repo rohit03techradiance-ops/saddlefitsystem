@@ -1,0 +1,101 @@
+
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        body { font-family: Arial, sans-serif; margin: 18px; color: #111; }
+        h1, h2 { margin: 0 0 10px 0; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+        td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
+        .section { margin-bottom: 18px; }
+        .muted { color: #555; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <h1>Saddle Fit Report</h1>
+      <div class="muted">ID: 79b46226-6d81-4d10-b01b-4a69cbdd0647 | Scheme: high_wither | Saddle: english</div>
+
+      <div class="section">
+        <h2>Simple Summary</h2>
+        <ul>
+          <li>Stability looks <b>Needs Attention</b> (score 0/100).</li>
+          <li>Fit risk: <b>High</b>; rider level: <b>Beginner</b> (11/100).</li>
+          <li>Warnings: Front-down pitch trend detected (saddle may be tipping forward).; Higher saddle rocking detected (oscillation over stride).; Noticeable saddle drift detected (forward/back or sliding).; Shoulder/hip alignment variance detected (uneven rider balance).; Higher vertical bounce detected in saddle midpoint.; Rear vs front clearance variation suggests bridging tendency.</li>
+          <li>Tracking quality: 18.1% across 212 frames.</li>
+          <li>Next step: Check withers clearance + front balance. Consider fitter check or front pad/shim if appropriate.</li>
+        </ul>
+      </div>
+
+      <div class="section">
+        <h2>Executive Summary</h2>
+        <table>
+          <tr><td>Stability</td><td>Needs Attention (0/100)</td></tr>
+          <tr><td>Fit risk</td><td>High</td></tr>
+          <tr><td>Rider level</td><td>Beginner (11/100)</td></tr>
+          <tr><td>Key warnings</td><td>Front-down pitch trend detected (saddle may be tipping forward).; Higher saddle rocking detected (oscillation over stride).; Noticeable saddle drift detected (forward/back or sliding).; Shoulder/hip alignment variance detected (uneven rider balance).; Higher vertical bounce detected in saddle midpoint.; Rear vs front clearance variation suggests bridging tendency.</td></tr>
+          <tr><td>Tracking confidence</td><td>18.1%</td></tr>
+        </table>
+      </div>
+
+      <div class="section">
+        <h2>Saddle Stability</h2>
+        <table>
+          <tr><td>Pitch mean / std (deg)</td><td>-168.61 / 35.08</td></tr>
+          <tr><td>Rocking amplitude (deg)</td><td>29.85</td></tr>
+          <tr><td>Drift X (px) + direction</td><td>103.49 (backward)</td></tr>
+          <tr><td>Drift rate (px/s)</td><td>-3.04</td></tr>
+          <tr><td>Vertical bounce (px)</td><td>45.68</td></tr>
+          <tr><td>Cadence (Hz)</td><td>0.00</td></tr>
+        </table>
+      </div>
+
+      <div class="section">
+        <h2>Alignment</h2>
+        <table>
+          <tr><td>Topline mean / std (deg)</td><td>-40.93 / 12.61</td></tr>
+          <tr><td>Saddle vs topline diff (deg)</td><td>-127.68</td></tr>
+          <tr><td>Withers clearance min/mean/std (px)</td><td>86.09 / 308.92 / 46.98</td></tr>
+          <tr><td>Clearance collapse</td><td>No</td></tr>
+          <tr><td>Bridging proxy</td><td>4.80</td></tr>
+        </table>
+      </div>
+
+      <div class="section">
+        <h2>Symmetry</h2>
+        <table>
+          <tr><td>Rider shoulder diff mean/std (px)</td><td>-220.66 / 138.21</td></tr>
+          <tr><td>Rider hip diff mean/std (px)</td><td>157.76 / 94.62</td></tr>
+          <tr><td>Rider lean consistency std (deg)</td><td>37.58</td></tr>
+          <tr><td>Saddle roll proxy</td><td>232.82</td></tr>
+          <tr><td>Horse topline std (deg)</td><td>12.61</td></tr>
+        </table>
+        <div class="muted">Confidence: 18.1% | Note: Side-view only; lateral symmetry not observed.</div>
+      </div>
+
+      <div class="section">
+        <h2>Coaching</h2>
+        <table>
+          <tr><td>Doing well</td><td>Withers clearance maintained through the ride.</td></tr>
+          <tr><td>To improve</td><td>Reduce vertical bounce by engaging core and following the motion. / Equalize weight in both stirrups to level shoulders/hips. / Improve saddle stability with tack adjustments or pad choice.</td></tr>
+          <tr><td>Drills</td><td>Posting trot with light contact: focus on even shoulder height for 30s intervals. | Two-point over ground poles to stabilize core and reduce bounce. | Ride straight lines with visual markers to monitor drift and alignment.</td></tr>
+        </table>
+      </div>
+
+      <div class="section">
+        <h2>Gear & Safety</h2>
+        <table>
+          <tr><td>Status</td><td>WARN</td></tr>
+          <tr><td>Notes</td><td>Consider breastplate for drift control.</td></tr>
+          <tr><td>Recommendations</td><td>-</td></tr>
+        </table>
+      </div>
+
+      <div class="section">
+        <h2>Marks (0-10) & Improvements</h2>
+        <table>
+          <tr><td>Stability (10)</td><td>0.0 - Reduce rocking and drift to raise stability.</td></tr><tr><td>Alignment (10)</td><td>0.0 - Balance saddle to match topline and keep even contact.</td></tr><tr><td>Symmetry (10)</td><td>0.0 - Level shoulders/hips and equalize stirrup pressure.</td></tr><tr><td>Rhythm (10)</td><td>0.0 - Keep steady tempo; use metronome or poles if needed.</td></tr><tr><td>Clearance (10)</td><td>8.8 - Maintain withers clearance; adjust pad/tree if low.</td></tr><tr><td>Tracking (10)</td><td>1.8 - Film steady side view for higher tracking confidence.</td></tr><tr><td>Bounce (10)</td><td>4.3 - Engage core and follow motion to reduce bounce.</td></tr><tr><td>Drift (10)</td><td>0.0 - Check girth, pad grip, and straightness to limit drift.</td></tr>
+        </table>
+      </div>
+    </body>
+    </html>
+    
