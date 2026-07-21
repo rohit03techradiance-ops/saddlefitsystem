@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 from fastapi import Body, FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import runtime_paths as storage
 from analysis_config import (
@@ -651,6 +652,9 @@ def auto_calibrate_points(
     return {"points": points, "confidence": confidence, "details": {"pose_vis": pose_vis, "contour_score": contour_score}}
 
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
+PUBLIC_DIR = Path(__file__).with_name("public")
+if PUBLIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=os.fspath(PUBLIC_DIR)), name="static")
 
 BASE_DIR = storage.PROJECT_ROOT
 RUNTIME_ROOT = storage.RUNTIME_ROOT
@@ -4262,18 +4266,26 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" rol
 </svg>"""
 
 
-def favicon_response() -> Response:
-    favicon_path = Path(__file__).with_name("public") / "favicon.svg"
-    if favicon_path.exists():
-        return FileResponse(os.fspath(favicon_path), media_type="image/svg+xml")
+def favicon_asset_response(filename: str, media_type: str) -> Response:
+    asset_path = PUBLIC_DIR / filename
+    if asset_path.exists():
+        return FileResponse(os.fspath(asset_path), media_type=media_type)
     return Response(FAVICON_SVG, media_type="image/svg+xml")
 
 
 @app.get("/favicon.svg", include_in_schema=False)
+def favicon_svg():
+    return favicon_asset_response("favicon.svg", "image/svg+xml")
+
+
 @app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    return favicon_asset_response("favicon.ico", "image/x-icon")
+
+
 @app.get("/favicon.png", include_in_schema=False)
-def favicon():
-    return favicon_response()
+def favicon_png():
+    return favicon_asset_response("favicon.png", "image/png")
 
 
 # Serve the dashboard at both `/` and `/start` so direct bookmarks stay lightweight.
@@ -4309,6 +4321,8 @@ def dashboard():
     <head>
       <title>Riders Bay Saddle Fit Agent</title>
       <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+      <link rel="icon" type="image/png" href="/favicon.png" sizes="64x64" />
       <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
       <style>
         :root {{

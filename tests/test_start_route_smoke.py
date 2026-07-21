@@ -82,9 +82,21 @@ class StartRouteSmokeTest(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(b"<html", body)
                 elif path == "/dashboard.js":
                     self.assertIn(b"window", body)
-                else:
+                elif path == "/favicon.svg":
                     self.assertIn("image/svg+xml", content_type)
                     self.assertIn(b"<svg", body)
+                elif path == "/favicon.ico":
+                    self.assertTrue(
+                        content_type.startswith("image/x-icon")
+                        or content_type.startswith("image/vnd.microsoft.icon")
+                        or content_type.startswith("application/octet-stream")
+                    )
+                    self.assertGreater(len(body), 100)
+                elif path == "/favicon.png":
+                    self.assertIn("image/png", content_type)
+                    self.assertGreater(len(body), 100)
+                else:
+                    self.fail(f"Unexpected test path: {path}")
 
 
 if __name__ == "__main__":
