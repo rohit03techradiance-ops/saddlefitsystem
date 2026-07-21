@@ -8,8 +8,8 @@
   const analysisApiUrl = config.analysisApiUrl || "/api/analyze";
   const compareApiUrl = config.compareApiUrl || "/api/compare";
   const blobClientImportUrl = config.blobClientImportUrl || "https://esm.sh/@vercel/blob@2.6.1/client";
-  const allowedExtensions = [".mp4", ".mov"];
-  const allowedMimeTypes = ["video/mp4", "video/quicktime"];
+  const allowedExtensions = [".mp4", ".mov", ".webm"];
+  const allowedMimeTypes = ["video/mp4", "video/quicktime", "video/webm"];
 
   const uploadStepsSingle = [
     { title: "Preparing Upload", subtitle: "Validating the clip and securing the upload." },
@@ -132,6 +132,7 @@
     if (allowedMimeTypes.includes(explicit)) return explicit;
     const ext = String(file && file.name ? file.name : "").toLowerCase().split(".").pop();
     if (ext === "mov") return "video/quicktime";
+    if (ext === "webm") return "video/webm";
     return "video/mp4";
   }
 
@@ -162,7 +163,7 @@
       throw new Error(`Selected file exceeds the ${maxVideoLabel} upload limit.`);
     }
     if (!isSupportedVideoFile(file)) {
-      throw new Error("Only MP4 and MOV videos are supported.");
+      throw new Error("Only MP4, MOV, and WEBM videos are supported.");
     }
   }
 
@@ -290,6 +291,16 @@
     };
   }
 
+  function buildUploadClientPayload(file, scope, slot) {
+    return JSON.stringify({
+      originalFilename: file && file.name ? file.name : "",
+      contentType: inferMimeType(file),
+      scope,
+      slot: slot || "",
+      sizeBytes: file && typeof file.size === "number" ? file.size : 0,
+    });
+  }
+
   function buildComparisonPayload(blobA, blobB, fileA, fileB) {
     return {
       video_a_url: blobA.url,
@@ -312,6 +323,34 @@
     } catch (_error) {
       return { raw: text };
     }
+  }
+
+  function extractErrorMessage(error) {
+    if (!error) {
+      return "Upload failed.";
+    }
+    if (typeof error === "string") {
+      return error;
+    }
+    const candidates = [
+      error.message,
+      error.detail,
+      error.error,
+      error.response && error.response.error,
+      error.response && error.response.message,
+      error.response && error.response.detail,
+      error.body && error.body.error,
+      error.body && error.body.message,
+      error.data && error.data.error,
+      error.data && error.data.message,
+      error.cause && error.cause.message,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate;
+      }
+    }
+    return "Upload failed.";
   }
 
   async function postJson(url, payload) {
@@ -399,6 +438,7 @@
       handleUploadUrl: blobUploadUrl,
       multipart: true,
       contentType: inferMimeType(file),
+      clientPayload: buildUploadClientPayload(file, scope, slot),
       onUploadProgress: onProgress,
     });
   }
@@ -461,7 +501,7 @@
       });
       window.setTimeout(() => redirectToReport(response), 250);
     } catch (error) {
-      showError(error && error.message ? error.message : String(error));
+      showError(extractErrorMessage(error));
       setFormBusy(form, false);
     }
   }
@@ -537,7 +577,7 @@
       });
       window.setTimeout(() => redirectToReport(response), 250);
     } catch (error) {
-      showError(error && error.message ? error.message : String(error));
+      showError(extractErrorMessage(error));
       setFormBusy(form, false);
     }
   }

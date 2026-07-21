@@ -64,8 +64,8 @@ except Exception as exc:  # pragma: no cover - optional dependency
 _WEASYPRINT = None
 _WEASYPRINT_ATTEMPTED = False
 
-ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov"}
-ALLOWED_VIDEO_MIME_TYPES = {"video/mp4", "video/quicktime"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm"}
+ALLOWED_VIDEO_MIME_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
 BLOB_UPLOAD_PREFIX = "videos"
 DEFAULT_VIDEO_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
 
@@ -102,6 +102,8 @@ def infer_video_content_type(filename: str, mime_type: Optional[str] = None) -> 
     ext = os.path.splitext((filename or "").lower())[1]
     if ext == ".mov":
         return "video/quicktime"
+    if ext == ".webm":
+        return "video/webm"
     return "video/mp4"
 
 
@@ -133,7 +135,7 @@ def validate_blob_path(pathname: str, scope: Optional[str] = None) -> str:
         raise ValueError("Invalid blob filename.")
     ext = os.path.splitext(basename)[1].lower()
     if ext not in ALLOWED_VIDEO_EXTENSIONS:
-        raise ValueError("Only MP4 and MOV videos are allowed.")
+        raise ValueError("Only MP4, MOV, and WEBM videos are allowed.")
     return normalized
 
 
@@ -4588,8 +4590,8 @@ def dashboard():
             <h3 style="margin:0;">Start analysis</h3>
             <p class="hint" style="margin-top:4px;">Designed for quick uploads and clean rider/horse metrics without unnecessary clutter.</p>
             <form id="uploadForm" action="/start" method="post" enctype="multipart/form-data">
-              <label>Video (MP4 / MOV)</label>
-              <input type="file" name="video" accept="video/mp4,video/quicktime,.mp4,.mov" required />
+              <label>Video (MP4 / MOV / WEBM)</label>
+              <input type="file" name="video" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" required />
 
               <div class="input-row">
                 <div>
@@ -4660,10 +4662,10 @@ def dashboard():
               </div>
             </div>
             <form id="compareForm" action="/compare_start" method="post" enctype="multipart/form-data">
-              <label>Video A (MP4 / MOV)</label>
-              <input type="file" name="video_a" accept="video/mp4,video/quicktime,.mp4,.mov" required />
-              <label>Video B (MP4 / MOV)</label>
-              <input type="file" name="video_b" accept="video/mp4,video/quicktime,.mp4,.mov" required />
+              <label>Video A (MP4 / MOV / WEBM)</label>
+              <input type="file" name="video_a" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" required />
+              <label>Video B (MP4 / MOV / WEBM)</label>
+              <input type="file" name="video_b" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" required />
 
               <div class="input-row">
                 <div>
@@ -5930,6 +5932,8 @@ def guess_mime(video_path: str) -> str:
         return "video/mp4"
     if ext in [".mov", ".qt"]:
         return "video/quicktime"
+    if ext == ".webm":
+        return "video/webm"
     return "application/octet-stream"
 
 
