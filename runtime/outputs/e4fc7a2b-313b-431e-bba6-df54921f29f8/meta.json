@@ -1,0 +1,36 @@
+{
+  "analysis_id": "e4fc7a2b-313b-431e-bba6-df54921f29f8",
+  "video_filename": "horse riding.mp4",
+  "horse_scheme": "high_wither",
+  "horse_profile": "high_wither",
+  "discipline": "general_riding",
+  "saddle_type": "english",
+  "gear": {},
+  "gear_detection": {
+    "gear": {
+      "helmet": "unknown",
+      "boots": "unknown",
+      "pad": "unknown",
+      "girth": "unknown",
+      "breastplate": "unknown",
+      "crupper": "unknown",
+      "stirrups": "unknown"
+    },
+    "confidences": {
+      "helmet": 0.0,
+      "boots": 0.0,
+      "pad": 0.0,
+      "girth": 0.0,
+      "breastplate": 0.0,
+      "crupper": 0.0,
+      "stirrups": 0.0
+    },
+    "notes": [
+      "Pose landmarks unavailable; gear auto-detect limited."
+    ],
+    "method": "frame_only"
+  },
+  "gear_used": {},
+  "frame_width": 1920,
+  "frame_height": 1080
+}

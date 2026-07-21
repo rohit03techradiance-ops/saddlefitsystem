@@ -1,0 +1,102 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3596 >>
+stream
+BT
+/F1 16 Tf
+72 760 Td
+(Saddle Fit Report \(lite\)) Tj
+/F1 11 Tf
+0 -16 Td
+(ID: 1b8355e0-eff3-4e71-90a2-03705d68ba6e) Tj
+0 -16 Td
+(Scheme: high_wither | Saddle: english) Tj
+0 -16 Td
+(Stability: 0 \(Potential Concern\)) Tj
+0 -16 Td
+(Fit risk: High) Tj
+0 -16 Td
+(Rider: Beginner \(13/100\)) Tj
+0 -16 Td
+(Warnings: Front-down saddle pitch detected.; Higher saddle rocking detected across the ride.; Noticeable saddle drift detected.; Higher vertical bounce detected at the saddle midpoint.; Rear/front clearance variation suggests bridging tendency.) Tj
+0 -16 Td
+(Tracking: 20.6% over 256 frames) Tj
+0 -16 Td
+(Pitch mean/std: -79.87/123.86 deg) Tj
+0 -16 Td
+(Rock amplitude: 316.79 deg) Tj
+0 -16 Td
+(Drift X: 933.41 px \(backward\)) Tj
+0 -16 Td
+(Bounce \(px\): 114.86; cadence: 0.00 Hz; duration: 17.02s) Tj
+0 -16 Td
+(Withers clearance min/mean/std: 89.54/153.26/142.06 px) Tj
+0 -16 Td
+(Topline mean/std: 71.02/46.61 deg; saddle-topline diff: -150.89 deg) Tj
+0 -16 Td
+(Symmetry shoulders/hips \(px std\): 8.82/9.91; roll proxy: 18.73) Tj
+0 -16 Td
+(Horse topline std: 46.61; confidence: Side-view only; lateral symmetry not observed.) Tj
+0 -16 Td
+(Gear status: WARN) Tj
+0 -16 Td
+(Gear used: helmet -; boots -; pad -; girth -; breastplate -) Tj
+0 -16 Td
+(Detected: helmet unknown \(0%\); boots unknown \(0%\); pad unknown \(0%\); girth unknown \(0%\); breastplate unknown \(0%\); crupper unknown \(0%\); stirrups unknown \(0%\)) Tj
+0 -16 Td
+(Detection notes: Pose landmarks unavailable; gear auto-detect limited.) Tj
+0 -16 Td
+(Gear notes: Consider breastplate for drift control.) Tj
+0 -16 Td
+(Recommendations: Check withers clearance and front balance. Use fitter guidance if the saddle appears to tip forward.; Check panel contact and girthing. Excessive rock can indicate bridging or unstable support.; Review girth placement, pad grip, and saddle alignment to reduce movement.; Use core engagement and a softer follow-through to reduce bounce.; Evaluate panel contact and consider a fitter review if bridging persists.; Cadence was not detected cleanly; use a longer, steadier straight-line clip for rhythm analysis.; Rider level estimate: Beginner \(13/100\).) Tj
+0 -16 Td
+(To improve: Reduce upper-body motion and keep the torso quieter through the stride.; Maintain a steadier lower leg and keep the heel quietly under the hip.; Use a more rhythmic straight-line clip if you want clearer cadence analysis.; Review saddle placement and withers clearance for a more centered position.) Tj
+0 -16 Td
+(Drills: Ride straight lines and check that shoulders stay level through the stride.; Use light two-point or half-seat work to quiet the lower leg and reduce bounce.; Repeat short intervals and compare the same metrics across sessions for trend tracking.) Tj
+0 -16 Td
+(Mark Stability: 0.0/10 - Reduce rocking and drift to raise stability.) Tj
+0 -16 Td
+(Mark Alignment: 0.0/10 - Balance saddle to match topline and keep even contact.) Tj
+0 -16 Td
+(Mark Symmetry: 6.3/10 - Level shoulders/hips and equalize stirrup pressure.) Tj
+0 -16 Td
+(Mark Rhythm: 0.0/10 - Keep steady tempo; use metronome or poles if needed.) Tj
+0 -16 Td
+(Mark Clearance: 8.8/10 - Maintain withers clearance; adjust pad/tree if low.) Tj
+0 -16 Td
+(Mark Tracking: 2.1/10 - Film steady side view for higher tracking confidence.) Tj
+0 -16 Td
+(Mark Bounce: 0.0/10 - Engage core and follow motion to reduce bounce.) Tj
+0 -16 Td
+(Mark Drift: 0.0/10 - Check girth, pad grip, and straightness to limit drift.) Tj
+0 -16 Td
+(Top tip: Check withers clearance and front balance. Use fitter guidance if the saddle appears to tip forward.) Tj
+ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000003889 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+3959
+%%EOF
