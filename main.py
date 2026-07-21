@@ -3,12 +3,15 @@ import uuid
 import json
 import math
 import io
+from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
 import cv2
 import numpy as np
 from fastapi import Body, FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+import runtime_paths as storage
+
 try:
     import mediapipe as mp  # type: ignore
     MP_AVAILABLE = hasattr(mp, "solutions")
@@ -17,17 +20,30 @@ except Exception:
     MP_AVAILABLE = False
 
 try:
-    import weasyprint  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    weasyprint = None
-
-try:
     import multipart  # type: ignore
     MULTIPART_AVAILABLE = True
     MULTIPART_ERROR = ""
 except Exception as exc:  # pragma: no cover - optional dependency
     MULTIPART_AVAILABLE = False
     MULTIPART_ERROR = str(exc)
+
+
+_WEASYPRINT = None
+_WEASYPRINT_ATTEMPTED = False
+
+
+def get_weasyprint():
+    global _WEASYPRINT_ATTEMPTED, _WEASYPRINT
+    if _WEASYPRINT_ATTEMPTED:
+        return _WEASYPRINT
+    _WEASYPRINT_ATTEMPTED = True
+    try:
+        import weasyprint as weasyprint_module  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        _WEASYPRINT = None
+    else:
+        _WEASYPRINT = weasyprint_module
+    return _WEASYPRINT
 
 
 def clamp_point(x: float, y: float, w: int, h: int) -> List[float]:
@@ -433,25 +449,16 @@ def auto_calibrate_points(frame_bgr: np.ndarray, horse_scheme: str, saddle_type:
 
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
-os.makedirs(OUTPUTS_DIR, exist_ok=True)
-COMPARE_DIR = os.path.join(OUTPUTS_DIR, "compare")
-IS_VERCEL = bool(os.getenv("VERCEL"))
-
-if IS_VERCEL:
-    # Vercel only allows runtime file writing inside /tmp
-    BASE_RUNTIME_DIR = tempfile.gettempdir()
-else:
-    # Local development
-    BASE_RUNTIME_DIR = os.path.dirname(os.path.abspath(__file__))
-
-OUTPUT_DIR = os.path.join(BASE_RUNTIME_DIR, "outputs")
-COMPARE_DIR = os.path.join(OUTPUT_DIR, "compare")
-
-# Create required directories
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(COMPARE_DIR, exist_ok=True)
+BASE_DIR = storage.PROJECT_ROOT
+RUNTIME_ROOT = storage.RUNTIME_ROOT
+UPLOAD_DIR = storage.UPLOAD_DIR
+OUTPUT_DIR = storage.OUTPUT_DIR
+OUTPUTS_DIR = OUTPUT_DIR
+LEGACY_OUTPUTS_DIR = BASE_DIR / "outputs"
+COMPARE_DIR = storage.COMPARE_DIR
+REPORT_DIR = storage.REPORT_DIR
+TEMP_DIR = storage.TEMP_DIR
+IS_VERCEL = storage.IS_VERCEL
 
 # --------- Horse "schemes" / disciplines list ----------
 HORSE_SCHEMES = [
@@ -514,21 +521,29 @@ def normalize_points(points: dict) -> Dict[str, List[float]]:
     return out
 
 
+def first_existing_path(*paths: os.PathLike[str] | str) -> Optional[Path]:
+    for path in paths:
+        candidate = Path(path)
+        if candidate.exists():
+            return candidate
+    return None
+
+
 # ------------------- Utility: extract first frame -------------------
 def extract_first_frame(video_path: str, out_png_path: str) -> Tuple[int, int]:
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(os.fspath(video_path))
     ok, frame = cap.read()
     cap.release()
     if not ok or frame is None:
         raise RuntimeError("Could not read first frame from video.")
     h, w = frame.shape[:2]
-    cv2.imwrite(out_png_path, frame)
+    cv2.imwrite(os.fspath(out_png_path), frame)
     return w, h
 
 
 # ------------------- Utility: extract frames at target FPS -------------------
 def extract_frames(video_path: str, target_fps: int = 12) -> Tuple[List[np.ndarray], List[float]]:
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(os.fspath(video_path))
     native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(int(native_fps // target_fps), 1)
 
@@ -1029,12 +1044,13 @@ def ensure_pdf_file(
     mark_scores: Dict[str, Any],
     pdf_path: str,
 ) -> bool:
-    os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+    pdf_file = storage.ensure_parent_dir(pdf_path)
     pdf_html = render_pdf_report_html(analysis_id, meta, metrics, scored, mark_scores)
     # Try full PDF via weasyprint; fallback to saving HTML so download never fails.
-    if weasyprint is not None:
+    pdf_renderer = get_weasyprint()
+    if pdf_renderer is not None:
         try:
-            weasyprint.HTML(string=pdf_html, base_url=BASE_DIR).write_pdf(pdf_path)
+            pdf_renderer.HTML(string=pdf_html, base_url=BASE_DIR).write_pdf(os.fspath(pdf_file))
             return True
         except Exception:
             pass
@@ -1106,7 +1122,7 @@ def ensure_pdf_file(
     lines.append(f"Top tip: {top_tip}")
 
     pdf_bytes = build_simple_pdf_bytes("Saddle Fit Report (lite)", lines)
-    with open(pdf_path, "wb") as pf:
+    with open(pdf_file, "wb") as pf:
         pf.write(pdf_bytes)
     return True
 
@@ -1956,10 +1972,13 @@ def save_report_assets(
     scored: Dict,
     points: Optional[Dict[str, List[float]]],
 ) -> Tuple[bool, str]:
+    storage.ensure_runtime_directories()
     mark_scores = compute_mark_scores(metrics, scored)
     stick_svg = build_stick_svg(metrics, points)
     growth_svg = build_growth_svg(metrics, scored["scores"])
     mark_chart_svg = build_mark_chart(mark_scores)
+    report_dir = storage.analysis_report_dir(analysis_id)
+    report_dir.mkdir(parents=True, exist_ok=True)
 
     report_html = render_report_html(
         analysis_id,
@@ -1974,7 +1993,7 @@ def save_report_assets(
         mark_scores=mark_scores,
     )
 
-    pdf_path = os.path.join(run_dir, "report.pdf")
+    pdf_path = report_dir / "report.pdf"
     pdf_generated = ensure_pdf_file(analysis_id, meta, metrics, scored, mark_scores, pdf_path)
 
     final_html = render_report_html(
@@ -1989,7 +2008,7 @@ def save_report_assets(
         points=points,
         mark_scores=mark_scores,
     )
-    with open(os.path.join(run_dir, "report.html"), "w", encoding="utf-8") as f:
+    with open(report_dir / "report.html", "w", encoding="utf-8") as f:
         f.write(final_html)
 
     return pdf_generated, final_html
@@ -2367,8 +2386,11 @@ def save_compare_report(
     scored_a: Dict,
     scored_b: Dict,
 ) -> Tuple[bool, str]:
+    storage.ensure_runtime_directories()
     mark_scores_a = compute_mark_scores(metrics_a, scored_a)
     mark_scores_b = compute_mark_scores(metrics_b, scored_b)
+    report_dir = storage.comparison_report_dir(compare_id)
+    report_dir.mkdir(parents=True, exist_ok=True)
 
     pdf_html = render_compare_report(
         compare_id,
@@ -2386,14 +2408,39 @@ def save_compare_report(
         mark_scores_b=mark_scores_b,
     )
 
-    pdf_path = os.path.join(compare_dir, "report.pdf")
+    pdf_path = report_dir / "report.pdf"
     pdf_generated = False
-    if weasyprint is not None:
+    pdf_renderer = get_weasyprint()
+    if pdf_renderer is not None:
         try:
-            weasyprint.HTML(string=pdf_html, base_url=BASE_DIR).write_pdf(pdf_path)
+            pdf_renderer.HTML(string=pdf_html, base_url=BASE_DIR).write_pdf(os.fspath(pdf_path))
             pdf_generated = True
         except Exception:
             pdf_generated = False
+
+    if not pdf_generated:
+        rec_a = scored_a.get("recommendations", []) or []
+        rec_b = scored_b.get("recommendations", []) or []
+        lines = [
+            f"Comparison ID: {compare_id}",
+            f"Scheme: {meta.get('horse_scheme', '')} | Saddle: {meta.get('saddle_type', '')}",
+            f"{label_a} stability: {scored_a['scores'].get('saddle_stability', 0)} ({scored_a['scores'].get('stability_label', '')})",
+            f"{label_b} stability: {scored_b['scores'].get('saddle_stability', 0)} ({scored_b['scores'].get('stability_label', '')})",
+            f"{label_a} rider score: {scored_a['scores'].get('rider_score', 0)}/100",
+            f"{label_b} rider score: {scored_b['scores'].get('rider_score', 0)}/100",
+            f"Pitch mean/std: {metrics_a.get('pitch_mean_deg', 0.0):.2f}/{metrics_a.get('pitch_std_deg', 0.0):.2f} vs {metrics_b.get('pitch_mean_deg', 0.0):.2f}/{metrics_b.get('pitch_std_deg', 0.0):.2f}",
+            f"Rock amplitude: {metrics_a.get('rock_amplitude_deg', 0.0):.2f} vs {metrics_b.get('rock_amplitude_deg', 0.0):.2f}",
+            f"Drift X: {metrics_a.get('mid_drift_x_px', 0.0):.2f} vs {metrics_b.get('mid_drift_x_px', 0.0):.2f}",
+            f"Cadence: {metrics_a.get('cadence_hz', 0.0):.2f} vs {metrics_b.get('cadence_hz', 0.0):.2f}",
+            f"Flags {label_a}: " + ("; ".join(scored_a.get("flags", []) or ["None"]) if scored_a.get("flags") else "None"),
+            f"Flags {label_b}: " + ("; ".join(scored_b.get("flags", []) or ["None"]) if scored_b.get("flags") else "None"),
+            f"Top recommendation {label_a}: {rec_a[0] if rec_a else 'Keep a steady rhythm and balanced posture.'}",
+            f"Top recommendation {label_b}: {rec_b[0] if rec_b else 'Keep a steady rhythm and balanced posture.'}",
+        ]
+        pdf_bytes = build_simple_pdf_bytes("Saddle Fit Comparison (lite)", lines)
+        with open(pdf_path, "wb") as pf:
+            pf.write(pdf_bytes)
+        pdf_generated = True
 
     final_html = render_compare_report(
         compare_id,
@@ -2410,16 +2457,17 @@ def save_compare_report(
         mark_scores_a=mark_scores_a,
         mark_scores_b=mark_scores_b,
     )
-    with open(os.path.join(compare_dir, "report.html"), "w", encoding="utf-8") as f:
+    with open(report_dir / "report.html", "w", encoding="utf-8") as f:
         f.write(final_html)
 
     return pdf_generated, final_html
 
 
 def analyze_video_auto(run_dir: str, analysis_id: str, meta: dict) -> Tuple[dict, Dict[str, float], Dict, float]:
-    video_path = os.path.join(run_dir, meta["video_filename"])
-    frame_path = os.path.join(run_dir, "frame0.png")
-    frame = cv2.imread(frame_path)
+    run_dir_path = Path(run_dir)
+    video_path = run_dir_path / meta["video_filename"]
+    frame_path = run_dir_path / "frame0.png"
+    frame = cv2.imread(os.fspath(frame_path))
     if frame is None:
         raise RuntimeError("First frame missing for auto-calibration.")
 
@@ -2436,12 +2484,12 @@ def analyze_video_auto(run_dir: str, analysis_id: str, meta: dict) -> Tuple[dict
     meta["gear"] = merged_gear
     meta["gear_used"] = merged_gear
     try:
-        with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as mf:
+        with open(run_dir_path / "meta.json", "w", encoding="utf-8") as mf:
             json.dump(meta, mf, indent=2)
     except Exception:
         pass
 
-    frames, times = extract_frames(video_path, target_fps=12)
+    frames, times = extract_frames(os.fspath(video_path), target_fps=12)
     tracks, tstats = track_points_lk(frames, points)
     metrics = compute_metrics(tracks, times, tstats)
     gear_assessment = evaluate_gear(merged_gear, metrics, meta["horse_scheme"])
@@ -2470,7 +2518,7 @@ def analyze_video_auto(run_dir: str, analysis_id: str, meta: dict) -> Tuple[dict
         "marks": mark_scores,
     }
 
-    with open(os.path.join(run_dir, "result.json"), "w", encoding="utf-8") as f:
+    with open(run_dir_path / "result.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
     return result, metrics, scored, auto["confidence"]
@@ -2878,16 +2926,17 @@ if MULTIPART_AVAILABLE:
         if video is None or not video.filename:
             return HTMLResponse("<h3>No video uploaded.</h3>", status_code=400)
 
+        storage.ensure_runtime_directories()
         analysis_id = str(uuid.uuid4())
-        run_dir = os.path.join(OUTPUTS_DIR, analysis_id)
-        os.makedirs(run_dir, exist_ok=True)
+        run_dir = storage.analysis_output_dir(analysis_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
 
         filename = os.path.basename(video.filename) or "uploaded_video.mp4"
-        video_path = os.path.join(run_dir, filename)
+        video_path = run_dir / filename
         with open(video_path, "wb") as f:
             f.write(await video.read())
 
-        frame_path = os.path.join(run_dir, "frame0.png")
+        frame_path = run_dir / "frame0.png"
         w, h = extract_first_frame(video_path, frame_path)
 
         meta = {
@@ -2901,7 +2950,7 @@ if MULTIPART_AVAILABLE:
             "frame_width": w,
             "frame_height": h,
         }
-        with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
+        with open(run_dir / "meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
         try:
@@ -2932,25 +2981,26 @@ if MULTIPART_AVAILABLE:
         if not video_a.filename or not video_b.filename:
             return HTMLResponse("<h3>Both videos are required.</h3>", status_code=400)
 
+        storage.ensure_runtime_directories()
         compare_id = str(uuid.uuid4())
-        base_dir = os.path.join(COMPARE_DIR, compare_id)
-        run_a = os.path.join(base_dir, "a")
-        run_b = os.path.join(base_dir, "b")
-        os.makedirs(run_a, exist_ok=True)
-        os.makedirs(run_b, exist_ok=True)
+        base_dir = storage.comparison_output_dir(compare_id)
+        run_a = storage.comparison_case_dir(compare_id, "a")
+        run_b = storage.comparison_case_dir(compare_id, "b")
+        run_a.mkdir(parents=True, exist_ok=True)
+        run_b.mkdir(parents=True, exist_ok=True)
 
         # Save videos and frames
         fname_a = os.path.basename(video_a.filename) or "video_a.mp4"
         fname_b = os.path.basename(video_b.filename) or "video_b.mp4"
-        path_a = os.path.join(run_a, fname_a)
-        path_b = os.path.join(run_b, fname_b)
+        path_a = run_a / fname_a
+        path_b = run_b / fname_b
         with open(path_a, "wb") as f:
             f.write(await video_a.read())
         with open(path_b, "wb") as f:
             f.write(await video_b.read())
 
-        wa, ha = extract_first_frame(path_a, os.path.join(run_a, "frame0.png"))
-        wb, hb = extract_first_frame(path_b, os.path.join(run_b, "frame0.png"))
+        wa, ha = extract_first_frame(path_a, run_a / "frame0.png")
+        wb, hb = extract_first_frame(path_b, run_b / "frame0.png")
 
         meta_base = {
             "horse_scheme": horse_scheme_compare,
@@ -2968,7 +3018,7 @@ if MULTIPART_AVAILABLE:
         compare_meta = {"horse_scheme": horse_scheme_compare, "saddle_type": saddle_type_compare}
         pdf_generated, final_html = save_compare_report(base_dir, compare_id, compare_meta, fname_a, fname_b, metrics_a, metrics_b, scored_a, scored_b)
 
-        with open(os.path.join(base_dir, "compare.json"), "w", encoding="utf-8") as f:
+        with open(base_dir / "compare.json", "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "compare_id": compare_id,
@@ -2992,21 +3042,33 @@ else:
 
 @app.get("/frame/{analysis_id}")
 def get_frame(analysis_id: str):
-    path = os.path.join(OUTPUTS_DIR, analysis_id, "frame0.png")
-    if not os.path.exists(path):
+    path = first_existing_path(
+        storage.analysis_output_dir(analysis_id) / "frame0.png",
+        LEGACY_OUTPUTS_DIR / analysis_id / "frame0.png",
+    )
+    if path is None:
         return JSONResponse({"error": "frame not found"}, status_code=404)
-    return FileResponse(path)
+    return FileResponse(os.fspath(path))
 
 
 @app.post("/auto_calibrate/{analysis_id}")
 def auto_calibrate_api(analysis_id: str):
-    meta_path = os.path.join(OUTPUTS_DIR, analysis_id, "meta.json")
-    if not os.path.exists(meta_path):
+    meta_path = first_existing_path(
+        storage.analysis_output_dir(analysis_id) / "meta.json",
+        LEGACY_OUTPUTS_DIR / analysis_id / "meta.json",
+    )
+    if meta_path is None:
         return JSONResponse({"error": "invalid analysis_id"}, status_code=404)
 
-    meta = json.load(open(meta_path, "r", encoding="utf-8"))
-    frame_path = os.path.join(OUTPUTS_DIR, analysis_id, "frame0.png")
-    frame = cv2.imread(frame_path)
+    with open(meta_path, "r", encoding="utf-8") as handle:
+        meta = json.load(handle)
+    frame_path = first_existing_path(
+        storage.analysis_output_dir(analysis_id) / "frame0.png",
+        LEGACY_OUTPUTS_DIR / analysis_id / "frame0.png",
+    )
+    if frame_path is None:
+        return JSONResponse({"error": "frame missing"}, status_code=404)
+    frame = cv2.imread(os.fspath(frame_path))
     if frame is None:
         return JSONResponse({"error": "frame missing"}, status_code=404)
 
@@ -3018,11 +3080,15 @@ def auto_calibrate_api(analysis_id: str):
 
 @app.get("/calibrate/{analysis_id}", response_class=HTMLResponse)
 def calibrate_page(analysis_id: str):
-    meta_path = os.path.join(OUTPUTS_DIR, analysis_id, "meta.json")
-    if not os.path.exists(meta_path):
+    meta_path = first_existing_path(
+        storage.analysis_output_dir(analysis_id) / "meta.json",
+        LEGACY_OUTPUTS_DIR / analysis_id / "meta.json",
+    )
+    if meta_path is None:
         return HTMLResponse("<h3>Invalid analysis_id</h3>", status_code=404)
 
-    meta = json.load(open(meta_path, "r", encoding="utf-8"))
+    with open(meta_path, "r", encoding="utf-8") as handle:
+        meta = json.load(handle)
     horse_scheme = meta["horse_scheme"]
     saddle_type = meta["saddle_type"]
 
@@ -3207,13 +3273,19 @@ def calibrate_page(analysis_id: str):
 
 @app.post("/run/{analysis_id}", response_class=HTMLResponse)
 async def run_tracking(analysis_id: str, points: dict = Body(...)):
-    run_dir = os.path.join(OUTPUTS_DIR, analysis_id)
-    meta_path = os.path.join(run_dir, "meta.json")
-    if not os.path.exists(meta_path):
+    run_dir = storage.analysis_output_dir(analysis_id)
+    legacy_run_dir = LEGACY_OUTPUTS_DIR / analysis_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    meta_path = first_existing_path(run_dir / "meta.json", legacy_run_dir / "meta.json")
+    if meta_path is None:
         return HTMLResponse("<h3>Invalid analysis_id</h3>", status_code=404)
 
-    meta = json.load(open(meta_path, "r", encoding="utf-8"))
-    video_path = os.path.join(run_dir, meta["video_filename"])
+    with open(meta_path, "r", encoding="utf-8") as handle:
+        meta = json.load(handle)
+    video_path = first_existing_path(run_dir / meta["video_filename"], legacy_run_dir / meta["video_filename"])
+    if video_path is None:
+        return HTMLResponse("<h3>Video not found</h3>", status_code=404)
 
     required = [
         "saddle_front",
@@ -3233,17 +3305,18 @@ async def run_tracking(analysis_id: str, points: dict = Body(...)):
     init_points = normalize_points(points)
 
     # Auto-detect gear if not stored yet (manual calibration path).
-    frame0 = cv2.imread(os.path.join(run_dir, "frame0.png"))
+    frame0_path = first_existing_path(run_dir / "frame0.png", legacy_run_dir / "frame0.png")
+    frame0 = cv2.imread(os.fspath(frame0_path)) if frame0_path is not None else None
     detection_data = auto_detect_gear_and_safety(frame0, init_points) if frame0 is not None else {"gear": {}, "confidences": {}, "notes": ["Frame missing for gear detection."], "method": "frame_missing"}
     meta["gear_detection"] = detection_data
     merged_gear = merge_gear_sources(detection_data.get("gear", {}), meta.get("gear", {}))
     meta["gear"] = merged_gear
     meta["gear_used"] = merged_gear
-    with open(meta_path, "w", encoding="utf-8") as f:
+    with open(run_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     # Extract frames and track
-    frames, times = extract_frames(video_path, target_fps=12)
+    frames, times = extract_frames(os.fspath(video_path), target_fps=12)
     tracks, tstats = track_points_lk(frames, init_points)
     metrics = compute_metrics(tracks, times, tstats)
     gear_assessment = evaluate_gear(merged_gear, metrics, meta["horse_scheme"])
@@ -3271,7 +3344,7 @@ async def run_tracking(analysis_id: str, points: dict = Body(...)):
         "marks": mark_scores,
     }
 
-    with open(os.path.join(run_dir, "result.json"), "w", encoding="utf-8") as f:
+    with open(run_dir / "result.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
     pdf_generated, final_html = save_report_assets(run_dir, analysis_id, meta, metrics, scored, result["calibration_points"])
@@ -3280,26 +3353,35 @@ async def run_tracking(analysis_id: str, points: dict = Body(...)):
 
 @app.get("/report/{analysis_id}", response_class=HTMLResponse)
 def report(analysis_id: str):
-    path = os.path.join(OUTPUTS_DIR, analysis_id, "report.html")
-    if not os.path.exists(path):
+    path = first_existing_path(
+        storage.analysis_report_dir(analysis_id) / "report.html",
+        storage.analysis_output_dir(analysis_id) / "report.html",
+        LEGACY_OUTPUTS_DIR / analysis_id / "report.html",
+    )
+    if path is None:
         return HTMLResponse("<h3>Report not found</h3>", status_code=404)
-    return open(path, "r", encoding="utf-8").read()
+    return path.read_text(encoding="utf-8")
 
 
 @app.get("/report/{analysis_id}.pdf")
 def report_pdf(analysis_id: str):
-    run_dir = os.path.join(OUTPUTS_DIR, analysis_id)
-    meta_path = os.path.join(run_dir, "meta.json")
-    result_path = os.path.join(run_dir, "result.json")
-    pdf_path = os.path.join(run_dir, "report.pdf")
+    run_dir = storage.analysis_output_dir(analysis_id)
+    legacy_run_dir = LEGACY_OUTPUTS_DIR / analysis_id
+    report_dir = storage.analysis_report_dir(analysis_id)
+    pdf_path = report_dir / "report.pdf"
 
     # If a PDF file already exists, serve it immediately.
-    if os.path.exists(pdf_path):
-        return FileResponse(pdf_path, media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
+    existing_pdf = first_existing_path(pdf_path, run_dir / "report.pdf", legacy_run_dir / "report.pdf")
+    if existing_pdf is not None:
+        return FileResponse(os.fspath(existing_pdf), media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
 
-    if os.path.exists(meta_path) and os.path.exists(result_path):
-        meta = json.load(open(meta_path, "r", encoding="utf-8"))
-        res = json.load(open(result_path, "r", encoding="utf-8"))
+    meta_path = first_existing_path(run_dir / "meta.json", legacy_run_dir / "meta.json")
+    result_path = first_existing_path(run_dir / "result.json", legacy_run_dir / "result.json")
+    if meta_path is not None and result_path is not None:
+        with open(meta_path, "r", encoding="utf-8") as handle:
+            meta = json.load(handle)
+        with open(result_path, "r", encoding="utf-8") as handle:
+            res = json.load(handle)
         mark_scores = res.get("marks", {})
         scores_block = {
             "scores": res.get("scores", {}),
@@ -3311,15 +3393,17 @@ def report_pdf(analysis_id: str):
             "gear_used": res.get("gear_used", {}),
         }
         ensure_pdf_file(analysis_id, meta, res.get("metrics", {}), scores_block, mark_scores, pdf_path)
-        return FileResponse(pdf_path, media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
+        return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
 
     # Fallback: if HTML exists, convert/serve it as PDF so the user sees the report.
-    html_path = os.path.join(run_dir, "report.html")
-    if os.path.exists(html_path):
+    html_path = first_existing_path(report_dir / "report.html", run_dir / "report.html", legacy_run_dir / "report.html")
+    if html_path is not None:
+        storage.ensure_parent_dir(pdf_path)
         try:
-            if weasyprint is not None:
-                weasyprint.HTML(filename=html_path, base_url=BASE_DIR).write_pdf(pdf_path)
-                return FileResponse(pdf_path, media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
+            pdf_renderer = get_weasyprint()
+            if pdf_renderer is not None:
+                pdf_renderer.HTML(filename=os.fspath(html_path), base_url=BASE_DIR).write_pdf(os.fspath(pdf_path))
+                return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
         except Exception:
             pass
         # Fallback: build a simple PDF pointing user to HTML content.
@@ -3333,7 +3417,7 @@ def report_pdf(analysis_id: str):
         )
         with open(pdf_path, "wb") as pf:
             pf.write(pdf_bytes)
-        return FileResponse(pdf_path, media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
+        return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
 
     return HTMLResponse("<h3>Report PDF not found and no saved data to regenerate.</h3>", status_code=404)
 
@@ -3348,18 +3432,56 @@ def report_pdf_direct(analysis_id: str):
 
 @app.get("/compare_report/{compare_id}", response_class=HTMLResponse)
 def compare_report(compare_id: str):
-    path = os.path.join(COMPARE_DIR, compare_id, "report.html")
-    if not os.path.exists(path):
+    path = first_existing_path(
+        storage.comparison_report_dir(compare_id) / "report.html",
+        storage.comparison_output_dir(compare_id) / "report.html",
+        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "report.html",
+    )
+    if path is None:
         return HTMLResponse("<h3>Comparison report not found</h3>", status_code=404)
-    return open(path, "r", encoding="utf-8").read()
+    return path.read_text(encoding="utf-8")
 
 
 @app.get("/compare_report/{compare_id}.pdf")
 def compare_report_pdf(compare_id: str):
-    path = os.path.join(COMPARE_DIR, compare_id, "report.pdf")
-    if not os.path.exists(path):
+    pdf_path = first_existing_path(
+        storage.comparison_report_dir(compare_id) / "report.pdf",
+        storage.comparison_output_dir(compare_id) / "report.pdf",
+        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "report.pdf",
+    )
+    if pdf_path is not None:
+        return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"compare_{compare_id}.pdf")
+
+    html_path = first_existing_path(
+        storage.comparison_report_dir(compare_id) / "report.html",
+        storage.comparison_output_dir(compare_id) / "report.html",
+        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "report.html",
+    )
+    if html_path is None:
         return HTMLResponse("<h3>Comparison PDF not found (install weasyprint to enable PDF export).</h3>", status_code=404)
-    return FileResponse(path, media_type="application/pdf", filename=f"compare_{compare_id}.pdf")
+
+    fallback_dir = storage.comparison_report_dir(compare_id)
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = fallback_dir / "report.pdf"
+    try:
+        pdf_renderer = get_weasyprint()
+        if pdf_renderer is not None:
+            pdf_renderer.HTML(filename=os.fspath(html_path), base_url=BASE_DIR).write_pdf(os.fspath(pdf_path))
+            return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"compare_{compare_id}.pdf")
+    except Exception:
+        pass
+
+    pdf_bytes = build_simple_pdf_bytes(
+        "Saddle Fit Comparison",
+        [
+            f"Comparison ID: {compare_id}",
+            "Full comparison HTML is saved on the server.",
+            "PDF rendering needs 'weasyprint'. Install it to enable full PDF export.",
+        ],
+    )
+    with open(pdf_path, "wb") as pf:
+        pf.write(pdf_bytes)
+    return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"compare_{compare_id}.pdf")
 
 
 def guess_mime(video_path: str) -> str:
@@ -3373,26 +3495,35 @@ def guess_mime(video_path: str) -> str:
 
 @app.get("/video/{analysis_id}")
 def video_file(analysis_id: str):
-    meta_path = os.path.join(OUTPUTS_DIR, analysis_id, "meta.json")
-    if not os.path.exists(meta_path):
+    meta_path = first_existing_path(
+        storage.analysis_output_dir(analysis_id) / "meta.json",
+        LEGACY_OUTPUTS_DIR / analysis_id / "meta.json",
+    )
+    if meta_path is None:
         return HTMLResponse("<h3>Invalid analysis_id</h3>", status_code=404)
-    meta = json.load(open(meta_path, "r", encoding="utf-8"))
-    video_path = os.path.join(OUTPUTS_DIR, analysis_id, meta["video_filename"])
-    if not os.path.exists(video_path):
+    with open(meta_path, "r", encoding="utf-8") as handle:
+        meta = json.load(handle)
+    video_path = first_existing_path(
+        storage.analysis_output_dir(analysis_id) / meta["video_filename"],
+        LEGACY_OUTPUTS_DIR / analysis_id / meta["video_filename"],
+    )
+    if video_path is None:
         return HTMLResponse("<h3>Video not found</h3>", status_code=404)
-    return FileResponse(video_path, media_type=guess_mime(video_path), filename=meta["video_filename"])
+    return FileResponse(os.fspath(video_path), media_type=guess_mime(os.fspath(video_path)), filename=meta["video_filename"])
 
 
 @app.get("/compare_video/{compare_id}/{label}")
 def compare_video(compare_id: str, label: str):
     if label not in ["a", "b"]:
         return HTMLResponse("<h3>Invalid label</h3>", status_code=400)
-    base_dir = os.path.join(COMPARE_DIR, compare_id, label)
-    meta_path = os.path.join(base_dir, "meta.json")
-    if not os.path.exists(meta_path):
+    base_dir = storage.comparison_case_dir(compare_id, label)
+    legacy_base_dir = LEGACY_OUTPUTS_DIR / "compare" / compare_id / label
+    meta_path = first_existing_path(base_dir / "meta.json", legacy_base_dir / "meta.json")
+    if meta_path is None:
         return HTMLResponse("<h3>Invalid comparison id</h3>", status_code=404)
-    meta = json.load(open(meta_path, "r", encoding="utf-8"))
-    video_path = os.path.join(base_dir, meta["video_filename"])
-    if not os.path.exists(video_path):
+    with open(meta_path, "r", encoding="utf-8") as handle:
+        meta = json.load(handle)
+    video_path = first_existing_path(base_dir / meta["video_filename"], legacy_base_dir / meta["video_filename"])
+    if video_path is None:
         return HTMLResponse("<h3>Video not found</h3>", status_code=404)
-    return FileResponse(video_path, media_type=guess_mime(video_path), filename=meta["video_filename"])
+    return FileResponse(os.fspath(video_path), media_type=guess_mime(os.fspath(video_path)), filename=meta["video_filename"])
