@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Discipline Guide</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 860px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+      line-height: 1.6;
+      color: #0f172a;
+      background: linear-gradient(180deg, #f8fafc 0%, #f0fdf4 100%);
+    }
+    h1, h2, h3 { margin: 0; }
+    h1 { font-size: 32px; margin-bottom: 10px; }
+    h2 { margin-top: 24px; font-size: 20px; }
+    .card {
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid #dbe4f0;
+      background: rgba(255,255,255,0.92);
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    }
+    ul { margin: 8px 0 0 20px; }
+    li { margin-bottom: 8px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #dcfce7;
+      color: #166534;
+      border: 1px solid #bbf7d0;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="pill">Discipline only</div>
+  <h1>Choosing a Discipline</h1>
+  <p class="card">Pick the discipline that best matches the ride. The report uses this to weight rider posture, horse rhythm, saddle stability, and symmetry differently.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>General Riding</h3>
+      <p>Balanced default for mixed work, schooling, and general comparison.</p>
+    </div>
+    <div class="card">
+      <h3>Trail Riding</h3>
+      <p>Prioritizes long-duration comfort, reduced drift, and calm rhythm.</p>
+    </div>
+    <div class="card">
+      <h3>Dressage</h3>
+      <p>Emphasizes symmetry, seat stability, straightness, and posture precision.</p>
+    </div>
+    <div class="card">
+      <h3>Show Jumping</h3>
+      <p>Focuses on lower-leg stability, balance through takeoff, and hip/knee control.</p>
+    </div>
+    <div class="card">
+      <h3>Eventing</h3>
+      <p>Blends balance and adaptability across mixed work and forward motion.</p>
+    </div>
+    <div class="card">
+      <h3>Polo / Racing / Barrel</h3>
+      <p>Dynamic disciplines where motion, control, and stability under speed matter more.</p>
+    </div>
+  </div>
+
+  <h2>Selection rule</h2>
+  <div class="card">
+    <ul>
+      <li>Choose the discipline that most closely matches the work being shown in the video.</li>
+      <li>If the ride is school work or mixed work, use <b>general_riding</b>.</li>
+      <li>If the ride is speed-oriented, use <b>polo</b>, <b>racing_gallop</b>, or <b>barrel_racing</b> as appropriate.</li>
+      <li>The closer the discipline match, the more meaningful the score weighting and recommendations will be.</li>
+    </ul>
+  </div>
+</body>
+</html>

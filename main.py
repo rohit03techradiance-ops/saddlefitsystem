@@ -3,6 +3,9 @@ import uuid
 import json
 import math
 import io
+import base64
+from datetime import datetime, timezone
+from html import escape as html_escape
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -10,7 +13,34 @@ import cv2
 import numpy as np
 from fastapi import Body, FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from pydantic import BaseModel, Field
 import runtime_paths as storage
+from analysis_config import (
+    COMPARISON_SIGNIFICANCE_THRESHOLD,
+    HORSE_PROFILE_OPTIONS,
+    DISCIPLINE_OPTIONS,
+    confidence_band,
+    evidence_status,
+    get_discipline_config,
+    get_profile_config,
+    normalize_discipline,
+    normalize_horse_profile,
+    score_band,
+    split_legacy_scheme,
+)
+from analysis_models import (
+    AnalysisReportResponse,
+    AnalysisResponse,
+    ComparisonReportResponse,
+    ComparisonRequest,
+    ComparisonResponse,
+    ComparisonRow,
+    ComparisonSide,
+    MetricEntry,
+    ScoreBlock,
+    AnalysisRequest,
+    VideoMetadata,
+)
 
 try:
     import mediapipe as mp  # type: ignore
@@ -360,7 +390,12 @@ def merge_gear_sources(primary: Dict[str, str], fallback: Dict[str, str]) -> Dic
     return merged
 
 
-def auto_calibrate_points(frame_bgr: np.ndarray, horse_scheme: str, saddle_type: str) -> Dict:
+def auto_calibrate_points(
+    frame_bgr: np.ndarray,
+    horse_profile: str,
+    saddle_type: str,
+    discipline: str = "general_riding",
+) -> Dict:
     """
     Returns:
       {
@@ -370,6 +405,10 @@ def auto_calibrate_points(frame_bgr: np.ndarray, horse_scheme: str, saddle_type:
       }
     """
     h, w = frame_bgr.shape[:2]
+    profile_key = normalize_horse_profile(horse_profile)
+    discipline_key = normalize_discipline(discipline)
+    profile_cfg = get_profile_config(profile_key)
+    discipline_cfg = get_discipline_config(discipline_key)
 
     pose = detect_rider_pose_points(frame_bgr)
     withers, croup, contour_score = detect_horse_topline_points(frame_bgr)
@@ -394,13 +433,19 @@ def auto_calibrate_points(frame_bgr: np.ndarray, horse_scheme: str, saddle_type:
             dx = 1.0
     dir_sign = 1.0 if dx >= 0 else -1.0
 
-    # Offsets: tune by discipline / saddle type
+    # Offsets: tune by discipline / horse profile / saddle type
     # (These are MVP defaults; we will tune later using sample videos.)
     base_len = 0.10 * w  # 10% of frame width
     if saddle_type == "western":
         base_len = 0.12 * w
-    if horse_scheme in ["polo", "mounted_archery", "tent_pegging", "racing", "eventing"]:
+    if profile_key in ["round_barrel", "wide_build"]:
+        base_len *= 1.03
+    if discipline_key in ["polo", "eventing", "barrel_racing", "racing_gallop"]:
         base_len *= 1.05
+    if profile_cfg.get("clearance_threshold_adjust", 0.0):
+        base_len += float(profile_cfg.get("clearance_threshold_adjust", 0.0)) * 0.04
+    if discipline_cfg.get("expected_motion") in {"dynamic", "forward"}:
+        base_len *= 1.02
 
     saddle_front = (saddle_center_x + dir_sign * base_len * 0.5, saddle_center_y)
     saddle_rear  = (saddle_center_x - dir_sign * base_len * 0.5, saddle_center_y)
@@ -460,33 +505,37 @@ REPORT_DIR = storage.REPORT_DIR
 TEMP_DIR = storage.TEMP_DIR
 IS_VERCEL = storage.IS_VERCEL
 
-# --------- Horse "schemes" / disciplines list ----------
-HORSE_SCHEMES = [
-    # Body-type schemes
-    ("high_wither", "High-wither (narrow / prominent withers)"),
-    ("round_barrel", "Round-barrel (girthy / wide ribcage)"),
-    ("narrow_build", "Narrow build (slimmer frame)"),
-    ("wide_build", "Wide build (broad back)"),
-    ("short_back", "Short back (compact)"),
-    ("long_back", "Long back (longer saddle support area)"),
+# --------- Horse profile / discipline selectors ----------
+HORSE_SCHEMES = HORSE_PROFILE_OPTIONS
 
-    # Riding disciplines / horse games
-    ("polo", "Polo"),
-    ("mounted_archery", "Mounted Archery"),
-    ("tent_pegging", "Tent Pegging"),
-    ("dressage", "Dressage"),
-    ("show_jumping", "Show Jumping"),
-    ("eventing", "Eventing"),
-    ("endurance", "Endurance / Long trail"),
-    ("racing", "Racing / Speed work"),
-    ("trail", "Trail / Leisure riding"),
-    ("reining", "Reining (Western)"),
-]
+
+def horse_profile_select_html(selected: str = "high_wither") -> str:
+    options: List[str] = []
+    for key, label in HORSE_PROFILE_OPTIONS:
+        sel = "selected" if key == selected else ""
+        options.append(f'<option value="{key}" {sel}>{label}</option>')
+    return "\n".join(options)
+
+
+def discipline_select_html(selected: str = "general_riding") -> str:
+    options: List[str] = []
+    for key, label in DISCIPLINE_OPTIONS:
+        sel = "selected" if key == selected else ""
+        options.append(f'<option value="{key}" {sel}>{label}</option>')
+    return "\n".join(options)
 
 
 @app.get("/horse-scheme-guide", response_class=HTMLResponse)
 def horse_scheme_guide():
     guide_path = os.path.join(BASE_DIR, "horse_scheme_guide.html")
+    if not os.path.exists(guide_path):
+        return HTMLResponse("<h3>Guide not found</h3>", status_code=404)
+    return open(guide_path, "r", encoding="utf-8").read()
+
+
+@app.get("/discipline-guide", response_class=HTMLResponse)
+def discipline_guide():
+    guide_path = os.path.join(BASE_DIR, "discipline_guide.html")
     if not os.path.exists(guide_path):
         return HTMLResponse("<h3>Guide not found</h3>", status_code=404)
     return open(guide_path, "r", encoding="utf-8").read()
@@ -786,73 +835,754 @@ def compute_metrics(
     }
 
 
-def score_and_recommend(metrics: Dict[str, Any], horse_scheme: str, saddle_type: str) -> Dict:
-    pitch = metrics["pitch_mean_deg"]
-    rock = metrics["rock_amplitude_deg"]
-    drift_x = metrics["mid_drift_x_px"]
-    drift_rate = metrics.get("mid_drift_rate_px_s", 0.0)
-    bounce = metrics.get("mid_bounce_y_px", 0.0)
-    shoulder_std = metrics["shoulder_level_std_px"]
-    hip_std = metrics["hip_level_std_px"]
-    cadence = metrics["cadence_hz"]
-    clearance_collapse = metrics.get("alignment", {}).get("clearance_collapse", False)
-    clearance_min = metrics.get("alignment", {}).get("withers_clearance_min_px", 0.0)
-    bridging_proxy = metrics.get("alignment", {}).get("bridging_proxy", 0.0)
-    tracking_conf = metrics.get("tracking", {}).get("tracking_success_pct", 0.0)
+def model_to_dict(model: Any) -> Dict[str, Any]:
+    if model is None:
+        return {}
+    if hasattr(model, "model_dump"):
+        return model.model_dump(mode="json")  # type: ignore[attr-defined]
+    if hasattr(model, "dict"):
+        return model.dict()  # type: ignore[call-arg]
+    if isinstance(model, dict):
+        return dict(model)
+    raise TypeError(f"Unsupported model type: {type(model)!r}")
 
-    front_down_threshold = -3.0 if horse_scheme in ["high_wither", "dressage", "show_jumping"] else -5.0
+
+def _safe_mean(values: List[float], default: float = 0.0) -> float:
+    arr = [float(v) for v in values if v is not None]
+    if not arr:
+        return float(default)
+    return float(np.mean(arr))
+
+
+def _safe_std(values: List[float], default: float = 0.0) -> float:
+    arr = [float(v) for v in values if v is not None]
+    if len(arr) < 2:
+        return float(default)
+    return float(np.std(arr))
+
+
+def _score_value(value: float, ceiling: float = 100.0) -> int:
+    return int(max(0.0, min(ceiling, round(value))))
+
+
+def _score_from_distance(value: Optional[float], target: float, spread: float, weight: float = 1.0) -> float:
+    if value is None:
+        return 0.0
+    spread = max(spread, 1e-6)
+    delta = abs(float(value) - float(target))
+    return max(0.0, 100.0 - (delta / spread) * 100.0 * weight)
+
+
+def _score_from_std(std_value: Optional[float], spread: float, base: float = 100.0, weight: float = 1.0) -> float:
+    if std_value is None:
+        return 0.0
+    spread = max(spread, 1e-6)
+    return max(0.0, base - (float(std_value) / spread) * 100.0 * weight)
+
+
+def resolve_analysis_context(meta: Dict[str, Any]) -> Tuple[str, str, str]:
+    legacy_profile, legacy_discipline = split_legacy_scheme(meta.get("horse_scheme"))
+    horse_profile = normalize_horse_profile(meta.get("horse_profile") or legacy_profile or meta.get("horse_scheme"))
+    discipline = normalize_discipline(meta.get("discipline") or legacy_discipline)
+    saddle_type = (meta.get("saddle_type") or "english").strip().lower()
+    if saddle_type not in {"english", "western"}:
+        saddle_type = "english"
+    return horse_profile, discipline, saddle_type
+
+
+def build_video_metadata(meta: Dict[str, Any], metrics: Optional[Dict[str, Any]] = None) -> VideoMetadata:
+    metrics = metrics or {}
+    fps = None
+    frames = None
+    if metrics:
+        tracking = metrics.get("tracking", {}) or {}
+        frames = int(tracking.get("frames", metrics.get("frames_analyzed", 0)) or 0)
+        duration = float(metrics.get("duration_sec", 0.0) or 0.0)
+        if duration > 0 and frames:
+            fps = float(frames / duration)
+    return VideoMetadata(
+        filename=str(meta.get("video_filename", "")),
+        mime_type=guess_mime(str(meta.get("video_filename", ""))) if meta.get("video_filename") else "",
+        duration_sec=float(metrics.get("duration_sec", 0.0) or 0.0) or None,
+        width=int(meta.get("frame_width", 0) or 0) or None,
+        height=int(meta.get("frame_height", 0) or 0) or None,
+        fps=fps,
+        frames=frames,
+    )
+
+
+def make_metric_entry(
+    name: str,
+    value: Optional[float],
+    unit: str = "",
+    status: str = "Insufficient Data",
+    source: str = "estimated",
+    note: str = "",
+    precision: int = 1,
+) -> MetricEntry:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return MetricEntry(
+            name=name,
+            value=None,
+            display="N/A",
+            unit=unit,
+            status="Insufficient Data",
+            source="insufficient",
+            note=note,
+        )
+    if precision <= 0:
+        display = f"{int(round(float(value)))}"
+    else:
+        display = f"{float(value):.{precision}f}"
+    return MetricEntry(
+        name=name,
+        value=float(value),
+        display=display,
+        unit=unit,
+        status=status,
+        source=source,
+        note=note,
+    )
+
+
+def encode_frame_data_uri(frame_bgr: np.ndarray) -> str:
+    ok, buf = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 84])
+    if not ok:
+        return ""
+    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def draw_annotation_overlay(
+    frame_bgr: np.ndarray,
+    points: Optional[Dict[str, List[float]]] = None,
+    pose_sample: Optional[Dict[str, Any]] = None,
+    title: str = "",
+) -> np.ndarray:
+    annotated = frame_bgr.copy()
+    overlay = annotated
+
+    if points:
+        colors = {
+            "saddle_front": (45, 212, 191),
+            "saddle_rear": (96, 165, 250),
+            "withers": (34, 197, 94),
+            "croup": (249, 115, 22),
+            "left_shoulder": (168, 85, 247),
+            "right_shoulder": (168, 85, 247),
+            "left_hip": (236, 72, 153),
+            "right_hip": (236, 72, 153),
+        }
+        for key, point in points.items():
+            if not point or len(point) != 2:
+                continue
+            px, py = int(round(point[0])), int(round(point[1]))
+            color = colors.get(key, (255, 255, 255))
+            cv2.circle(overlay, (px, py), 5, color, -1, lineType=cv2.LINE_AA)
+            cv2.putText(
+                overlay,
+                key.replace("_", " "),
+                (px + 6, py - 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (245, 245, 245),
+                1,
+                lineType=cv2.LINE_AA,
+            )
+        if points.get("saddle_front") and points.get("saddle_rear"):
+            sf = points["saddle_front"]
+            sr = points["saddle_rear"]
+            cv2.line(overlay, (int(sf[0]), int(sf[1])), (int(sr[0]), int(sr[1])), (45, 212, 191), 2, lineType=cv2.LINE_AA)
+        if points.get("withers") and points.get("croup"):
+            wh = points["withers"]
+            cr = points["croup"]
+            cv2.line(overlay, (int(wh[0]), int(wh[1])), (int(cr[0]), int(cr[1])), (34, 197, 94), 2, lineType=cv2.LINE_AA)
+
+    if pose_sample:
+        joints = pose_sample.get("joints", {})
+        joint_colors = {
+            "left_shoulder": (255, 255, 255),
+            "right_shoulder": (255, 255, 255),
+            "left_hip": (255, 255, 255),
+            "right_hip": (255, 255, 255),
+            "left_knee": (255, 230, 109),
+            "right_knee": (255, 230, 109),
+            "left_ankle": (255, 230, 109),
+            "right_ankle": (255, 230, 109),
+            "nose": (251, 191, 36),
+        }
+        for key, point in joints.items():
+            if not point or len(point) != 2:
+                continue
+            px, py = int(round(point[0])), int(round(point[1]))
+            cv2.circle(overlay, (px, py), 4, joint_colors.get(key, (255, 255, 255)), -1, lineType=cv2.LINE_AA)
+        for pair in [
+            ("left_shoulder", "right_shoulder"),
+            ("left_hip", "right_hip"),
+            ("left_shoulder", "left_hip"),
+            ("right_shoulder", "right_hip"),
+            ("left_hip", "left_knee"),
+            ("right_hip", "right_knee"),
+            ("left_knee", "left_ankle"),
+            ("right_knee", "right_ankle"),
+        ]:
+            a = joints.get(pair[0])
+            b = joints.get(pair[1])
+            if a and b:
+                cv2.line(
+                    overlay,
+                    (int(round(a[0])), int(round(a[1]))),
+                    (int(round(b[0])), int(round(b[1]))),
+                    (255, 255, 255),
+                    1,
+                    lineType=cv2.LINE_AA,
+                )
+        if pose_sample.get("torso_mid") and pose_sample.get("hip_mid"):
+            torso_mid = pose_sample["torso_mid"]
+            hip_mid = pose_sample["hip_mid"]
+            cv2.line(
+                overlay,
+                (int(round(hip_mid[0])), int(round(hip_mid[1]))),
+                (int(round(torso_mid[0])), int(round(torso_mid[1]))),
+                (56, 189, 248),
+                2,
+                lineType=cv2.LINE_AA,
+            )
+
+    if title:
+        cv2.rectangle(overlay, (10, 10), (min(470, overlay.shape[1] - 10), 62), (15, 23, 42), -1)
+        cv2.putText(
+            overlay,
+            title,
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            (255, 255, 255),
+            2,
+            lineType=cv2.LINE_AA,
+        )
+
+    return annotated
+
+
+def sample_rider_pose_metrics(
+    frames: List[np.ndarray],
+    times: List[float],
+    points: Optional[Dict[str, List[float]]] = None,
+    max_samples: int = 8,
+) -> Dict[str, Any]:
+    if not frames or not times:
+        return {
+            "available": False,
+            "estimated": True,
+            "sample_count": 0,
+            "confidence_pct": 0.0,
+            "samples": [],
+            "series": {},
+            "summary": {},
+            "notes": ["No frames available for pose sampling."],
+            "best_frame_index": None,
+            "annotated_frame": "",
+        }
+
+    sample_total = max(1, min(int(max_samples), len(frames)))
+    sample_indices = sorted(set(np.linspace(0, len(frames) - 1, sample_total).astype(int).tolist()))
+    samples: List[Dict[str, Any]] = []
+    series: Dict[str, List[float]] = {
+        "time": [],
+        "torso_angle": [],
+        "head_offset": [],
+        "shoulder_level": [],
+        "hip_level": [],
+        "seat_offset": [],
+        "left_knee_angle": [],
+        "right_knee_angle": [],
+        "left_ankle_angle": [],
+        "right_ankle_angle": [],
+        "vertical_motion": [],
+        "horizontal_motion": [],
+    }
+    visibilities: List[float] = []
+
+    saddle_mid = None
+    if points and points.get("saddle_front") and points.get("saddle_rear"):
+        saddle_mid = (
+            float((points["saddle_front"][0] + points["saddle_rear"][0]) / 2.0),
+            float((points["saddle_front"][1] + points["saddle_rear"][1]) / 2.0),
+        )
+
+    for idx in sample_indices:
+        frame = frames[idx]
+        pose_data = get_pose_landmarks(frame)
+        if pose_data is None:
+            continue
+
+        lms = pose_data["landmarks"]
+        pose_lm = pose_data["pose_lm"]
+        w = float(pose_data["w"])
+        h = float(pose_data["h"])
+
+        def xy(pt) -> Tuple[float, float]:
+            return (float(pt.x * w), float(pt.y * h))
+
+        def maybe_xy(pt):
+            if pt.visibility < 0.15:
+                return None
+            return xy(pt)
+
+        nose = maybe_xy(lms[pose_lm.NOSE])
+        lsh = maybe_xy(lms[pose_lm.LEFT_SHOULDER])
+        rsh = maybe_xy(lms[pose_lm.RIGHT_SHOULDER])
+        lhip = maybe_xy(lms[pose_lm.LEFT_HIP])
+        rhip = maybe_xy(lms[pose_lm.RIGHT_HIP])
+        lknee = maybe_xy(lms[pose_lm.LEFT_KNEE])
+        rknee = maybe_xy(lms[pose_lm.RIGHT_KNEE])
+        lankle = maybe_xy(lms[pose_lm.LEFT_ANKLE])
+        rankle = maybe_xy(lms[pose_lm.RIGHT_ANKLE])
+        lheel = maybe_xy(lms[pose_lm.LEFT_HEEL]) if hasattr(pose_lm, "LEFT_HEEL") else None
+        rheel = maybe_xy(lms[pose_lm.RIGHT_HEEL]) if hasattr(pose_lm, "RIGHT_HEEL") else None
+        lfoot = maybe_xy(lms[pose_lm.LEFT_FOOT_INDEX]) if hasattr(pose_lm, "LEFT_FOOT_INDEX") else None
+        rfoot = maybe_xy(lms[pose_lm.RIGHT_FOOT_INDEX]) if hasattr(pose_lm, "RIGHT_FOOT_INDEX") else None
+
+        coords = [p for p in [nose, lsh, rsh, lhip, rhip, lknee, rknee, lankle, rankle] if p is not None]
+        if len(coords) < 5:
+            continue
+
+        shoulder_mid = (
+            float((lsh[0] + rsh[0]) / 2.0) if lsh and rsh else float(coords[0][0]),
+            float((lsh[1] + rsh[1]) / 2.0) if lsh and rsh else float(coords[0][1]),
+        )
+        hip_mid = (
+            float((lhip[0] + rhip[0]) / 2.0) if lhip and rhip else float(coords[-1][0]),
+            float((lhip[1] + rhip[1]) / 2.0) if lhip and rhip else float(coords[-1][1]),
+        )
+        torso_mid = (
+            (shoulder_mid[0] + hip_mid[0]) / 2.0,
+            (shoulder_mid[1] + hip_mid[1]) / 2.0,
+        )
+
+        torso_angle = abs(abs(angle_deg(hip_mid, shoulder_mid)) - 90.0)
+        head_offset = abs((nose[0] if nose else shoulder_mid[0]) - shoulder_mid[0])
+        shoulder_level = abs((rsh[1] if rsh else shoulder_mid[1]) - (lsh[1] if lsh else shoulder_mid[1]))
+        hip_level = abs((rhip[1] if rhip else hip_mid[1]) - (lhip[1] if lhip else hip_mid[1]))
+        seat_offset = abs(hip_mid[0] - saddle_mid[0]) if saddle_mid is not None else abs(hip_mid[0] - (w / 2.0))
+        vertical_motion = abs(shoulder_mid[1] - hip_mid[1])
+        horizontal_motion = abs(shoulder_mid[0] - hip_mid[0])
+        left_knee_angle = compute_knee_angle(lhip, lknee, lankle) if lhip and lknee and lankle else None
+        right_knee_angle = compute_knee_angle(rhip, rknee, rankle) if rhip and rknee and rankle else None
+        left_ankle_angle = compute_knee_angle(lknee, lankle, lfoot) if lknee and lankle and lfoot else None
+        right_ankle_angle = compute_knee_angle(rknee, rankle, rfoot) if rknee and rankle and rfoot else None
+        sample_visibility = _safe_mean(
+            [
+                float(lms[pose_lm.NOSE].visibility),
+                float(lms[pose_lm.LEFT_SHOULDER].visibility),
+                float(lms[pose_lm.RIGHT_SHOULDER].visibility),
+                float(lms[pose_lm.LEFT_HIP].visibility),
+                float(lms[pose_lm.RIGHT_HIP].visibility),
+                float(lms[pose_lm.LEFT_KNEE].visibility),
+                float(lms[pose_lm.RIGHT_KNEE].visibility),
+                float(lms[pose_lm.LEFT_ANKLE].visibility),
+                float(lms[pose_lm.RIGHT_ANKLE].visibility),
+            ]
+        )
+
+        sample = {
+            "frame_index": int(idx),
+            "time_sec": float(times[min(idx, len(times) - 1)]),
+            "visibility": float(sample_visibility),
+            "joints": {
+                "nose": nose,
+                "left_shoulder": lsh,
+                "right_shoulder": rsh,
+                "left_hip": lhip,
+                "right_hip": rhip,
+                "left_knee": lknee,
+                "right_knee": rknee,
+                "left_ankle": lankle,
+                "right_ankle": rankle,
+                "left_heel": lheel,
+                "right_heel": rheel,
+            },
+            "torso_mid": torso_mid,
+            "hip_mid": hip_mid,
+            "angles": {
+                "torso_angle_deg": float(torso_angle),
+                "left_knee_angle_deg": float(left_knee_angle) if left_knee_angle is not None else None,
+                "right_knee_angle_deg": float(right_knee_angle) if right_knee_angle is not None else None,
+                "left_ankle_angle_deg": float(left_ankle_angle) if left_ankle_angle is not None else None,
+                "right_ankle_angle_deg": float(right_ankle_angle) if right_ankle_angle is not None else None,
+            },
+            "measurements": {
+                "head_offset_px": float(head_offset),
+                "shoulder_level_px": float(shoulder_level),
+                "hip_level_px": float(hip_level),
+                "seat_offset_px": float(seat_offset),
+                "vertical_motion_px": float(vertical_motion),
+                "horizontal_motion_px": float(horizontal_motion),
+            },
+        }
+        samples.append(sample)
+        visibilities.append(float(sample_visibility))
+        series["time"].append(float(sample["time_sec"]))
+        series["torso_angle"].append(float(torso_angle))
+        series["head_offset"].append(float(head_offset))
+        series["shoulder_level"].append(float(shoulder_level))
+        series["hip_level"].append(float(hip_level))
+        series["seat_offset"].append(float(seat_offset))
+        series["left_knee_angle"].append(float(left_knee_angle) if left_knee_angle is not None else float("nan"))
+        series["right_knee_angle"].append(float(right_knee_angle) if right_knee_angle is not None else float("nan"))
+        series["left_ankle_angle"].append(float(left_ankle_angle) if left_ankle_angle is not None else float("nan"))
+        series["right_ankle_angle"].append(float(right_ankle_angle) if right_ankle_angle is not None else float("nan"))
+        series["vertical_motion"].append(float(vertical_motion))
+        series["horizontal_motion"].append(float(horizontal_motion))
+
+    if not samples:
+        return {
+            "available": False,
+            "estimated": True,
+            "sample_count": 0,
+            "confidence_pct": 0.0,
+            "samples": [],
+            "series": {},
+            "summary": {},
+            "notes": [
+                "Pose landmarks were not reliable enough for rider joint analysis.",
+                "Measurements that depend on rider posture will be estimated from the tracked saddle motion only.",
+            ],
+            "best_frame_index": None,
+            "annotated_frame": "",
+        }
+
+    def _clean_series(values: List[float]) -> List[float]:
+        return [float(v) for v in values if isinstance(v, (int, float)) and not math.isnan(float(v))]
+
+    clean_torso = _clean_series(series["torso_angle"])
+    clean_head = _clean_series(series["head_offset"])
+    clean_shoulder = _clean_series(series["shoulder_level"])
+    clean_hip = _clean_series(series["hip_level"])
+    clean_seat = _clean_series(series["seat_offset"])
+    clean_vertical = _clean_series(series["vertical_motion"])
+    clean_horizontal = _clean_series(series["horizontal_motion"])
+    clean_left_knee = _clean_series(series["left_knee_angle"])
+    clean_right_knee = _clean_series(series["right_knee_angle"])
+    clean_left_ankle = _clean_series(series["left_ankle_angle"])
+    clean_right_ankle = _clean_series(series["right_ankle_angle"])
+
+    summary = {
+        "available": True,
+        "estimated": False,
+        "sample_count": len(samples),
+        "confidence_pct": float(max(0.0, min(100.0, _safe_mean(visibilities) * 100.0))),
+        "torso_angle_mean_deg": _safe_mean(clean_torso),
+        "torso_angle_std_deg": _safe_std(clean_torso),
+        "head_alignment_mean_px": _safe_mean(clean_head),
+        "head_alignment_std_px": _safe_std(clean_head),
+        "shoulder_level_mean_px": _safe_mean(clean_shoulder),
+        "shoulder_level_std_px": _safe_std(clean_shoulder),
+        "hip_level_mean_px": _safe_mean(clean_hip),
+        "hip_level_std_px": _safe_std(clean_hip),
+        "seat_center_offset_px_mean": _safe_mean(clean_seat),
+        "seat_center_offset_px_std": _safe_std(clean_seat),
+        "vertical_motion_px_mean": _safe_mean(clean_vertical),
+        "vertical_motion_px_std": _safe_std(clean_vertical),
+        "horizontal_motion_px_mean": _safe_mean(clean_horizontal),
+        "horizontal_motion_px_std": _safe_std(clean_horizontal),
+        "left_knee_angle_mean_deg": _safe_mean(clean_left_knee),
+        "left_knee_angle_std_deg": _safe_std(clean_left_knee),
+        "right_knee_angle_mean_deg": _safe_mean(clean_right_knee),
+        "right_knee_angle_std_deg": _safe_std(clean_right_knee),
+        "left_ankle_angle_mean_deg": _safe_mean(clean_left_ankle),
+        "left_ankle_angle_std_deg": _safe_std(clean_left_ankle),
+        "right_ankle_angle_mean_deg": _safe_mean(clean_right_ankle),
+        "right_ankle_angle_std_deg": _safe_std(clean_right_ankle),
+        "visibility_mean": _safe_mean(visibilities),
+        "visibility_std": _safe_std(visibilities),
+    }
+
+    best_sample = max(samples, key=lambda sample: float(sample.get("visibility", 0.0)))
+    best_frame_index = int(best_sample.get("frame_index", 0))
+    annotated = draw_annotation_overlay(
+        frames[best_frame_index],
+        points=points,
+        pose_sample=best_sample,
+        title="Rider & saddle reference frame",
+    )
+
+    notes = []
+    if summary["confidence_pct"] < 45:
+        notes.append("Pose detection confidence is limited; rider-specific scores are weighted conservatively.")
+    if summary["sample_count"] < max_samples:
+        notes.append("Fewer than the requested number of pose samples were usable.")
+
+    return {
+        "available": True,
+        "estimated": False,
+        "sample_count": len(samples),
+        "confidence_pct": summary["confidence_pct"],
+        "samples": samples,
+        "series": series,
+        "summary": summary,
+        "notes": notes,
+        "best_frame_index": best_frame_index,
+        "annotated_frame": encode_frame_data_uri(annotated),
+    }
+
+
+def score_and_recommend(
+    metrics: Dict[str, Any],
+    horse_profile: str,
+    saddle_type: str,
+    discipline: str = "general_riding",
+    pose_summary: Optional[Dict[str, Any]] = None,
+) -> Dict:
+    pose_summary = pose_summary or {}
+    profile_key = normalize_horse_profile(horse_profile)
+    discipline_key = normalize_discipline(discipline)
+    profile_cfg = get_profile_config(profile_key)
+    discipline_cfg = get_discipline_config(discipline_key)
+    weights = discipline_cfg.get("weights", {}) or {"rider": 0.35, "horse": 0.20, "saddle": 0.25, "symmetry": 0.20}
+    expected_rhythm = discipline_cfg.get("expected_rhythm_hz", (0.9, 1.8))
+    expected_rhythm_low, expected_rhythm_high = float(expected_rhythm[0]), float(expected_rhythm[1])
+    expected_rhythm_mid = (expected_rhythm_low + expected_rhythm_high) / 2.0
+
+    pitch = float(metrics.get("pitch_mean_deg", 0.0))
+    pitch_std = float(metrics.get("pitch_std_deg", 0.0))
+    rock = float(metrics.get("rock_amplitude_deg", 0.0))
+    drift_x = float(metrics.get("mid_drift_x_px", 0.0))
+    drift_rate = float(metrics.get("mid_drift_rate_px_s", 0.0))
+    bounce = float(metrics.get("mid_bounce_y_px", 0.0))
+    shoulder_std = float(metrics.get("shoulder_level_std_px", 0.0))
+    hip_std = float(metrics.get("hip_level_std_px", 0.0))
+    cadence = float(metrics.get("cadence_hz", 0.0))
+    clearance_collapse = bool(metrics.get("alignment", {}).get("clearance_collapse", False))
+    clearance_min = float(metrics.get("alignment", {}).get("withers_clearance_min_px", 0.0))
+    clearance_mean = float(metrics.get("alignment", {}).get("withers_clearance_mean_px", 0.0))
+    bridging_proxy = float(metrics.get("alignment", {}).get("bridging_proxy", 0.0))
+    topline_mean = float(metrics.get("alignment", {}).get("topline_mean_deg", 0.0))
+    topline_std = float(metrics.get("alignment", {}).get("topline_std_deg", 0.0))
+    saddle_topline_diff = float(metrics.get("alignment", {}).get("saddle_topline_diff_deg", 0.0))
+    tracking_conf = float(metrics.get("tracking", {}).get("tracking_success_pct", 0.0))
+    frame_w = float(metrics.get("tracking", {}).get("frame_w", 0.0) or 0.0)
+
+    pose_conf = float(pose_summary.get("confidence_pct", 0.0) or 0.0)
+    pose_visible = bool(pose_summary.get("available", False))
+    pose_samples = int(pose_summary.get("sample_count", 0) or 0)
+    pose_data = pose_summary.get("summary", {}) or {}
+
+    torso_mean = float(pose_data.get("torso_angle_mean_deg", 0.0) or 0.0)
+    torso_std = float(pose_data.get("torso_angle_std_deg", 0.0) or 0.0)
+    head_offset = float(pose_data.get("head_alignment_mean_px", 0.0) or 0.0)
+    head_offset_std = float(pose_data.get("head_alignment_std_px", 0.0) or 0.0)
+    seat_offset = float(pose_data.get("seat_center_offset_px_mean", 0.0) or 0.0)
+    seat_offset_std = float(pose_data.get("seat_center_offset_px_std", 0.0) or 0.0)
+    vertical_motion = float(pose_data.get("vertical_motion_px_mean", 0.0) or 0.0)
+    vertical_motion_std = float(pose_data.get("vertical_motion_px_std", 0.0) or 0.0)
+    horizontal_motion = float(pose_data.get("horizontal_motion_px_mean", 0.0) or 0.0)
+    horizontal_motion_std = float(pose_data.get("horizontal_motion_px_std", 0.0) or 0.0)
+    left_knee_mean = float(pose_data.get("left_knee_angle_mean_deg", 0.0) or 0.0)
+    right_knee_mean = float(pose_data.get("right_knee_angle_mean_deg", 0.0) or 0.0)
+    left_knee_std = float(pose_data.get("left_knee_angle_std_deg", 0.0) or 0.0)
+    right_knee_std = float(pose_data.get("right_knee_angle_std_deg", 0.0) or 0.0)
+    left_ankle_mean = float(pose_data.get("left_ankle_angle_mean_deg", 0.0) or 0.0)
+    right_ankle_mean = float(pose_data.get("right_ankle_angle_mean_deg", 0.0) or 0.0)
+    left_ankle_std = float(pose_data.get("left_ankle_angle_std_deg", 0.0) or 0.0)
+    right_ankle_std = float(pose_data.get("right_ankle_angle_std_deg", 0.0) or 0.0)
+
+    profile_clearance_adjust = float(profile_cfg.get("clearance_threshold_adjust", 0.0) or 0.0)
+    profile_rock_adjust = float(profile_cfg.get("rock_threshold_adjust", 0.0) or 0.0)
+    profile_drift_adjust = float(profile_cfg.get("drift_threshold_adjust", 0.0) or 0.0)
+
+    if frame_w <= 0:
+        frame_w = 1920.0
+    normalized = lambda value: abs(value) / frame_w * 100.0
+
+    front_down_threshold = float(profile_cfg.get("front_down_threshold", -4.0) or -4.0)
+    if discipline_key in {"dressage", "show_jumping", "equitation"}:
+        front_down_threshold += 0.5
+    if discipline_key in {"racing_gallop", "barrel_racing", "polo"}:
+        front_down_threshold -= 0.5
+
     rock_threshold = 6.0 if saddle_type == "english" else 8.0
+    rock_threshold += profile_rock_adjust
+    if discipline_key in {"polo", "racing_gallop", "barrel_racing", "eventing"}:
+        rock_threshold += 1.2
 
-    if horse_scheme in ["polo", "mounted_archery", "tent_pegging", "racing", "eventing"]:
-        rock_threshold += 1.5
+    drift_threshold = 35.0 + profile_drift_adjust
+    if profile_key in {"round_barrel", "wide_build"}:
+        drift_threshold += 8.0
+    if discipline_key in {"polo", "barrel_racing", "racing_gallop"}:
+        drift_threshold += 6.0
 
-    drift_threshold = 45.0 if horse_scheme in ["round_barrel", "polo", "mounted_archery", "tent_pegging"] else 35.0
     align_threshold = 12.0
     bounce_threshold = 24.0
+    seat_offset_threshold = 18.0
+
+    def clamp(value: float) -> float:
+        return max(0.0, min(100.0, value))
+
+    def band(score: Optional[float]) -> str:
+        return score_band(score if score is not None else None)
 
     flags: List[str] = []
     recs: List[str] = []
 
     if pitch < front_down_threshold:
-        flags.append("Front-down pitch trend detected (saddle may be tipping forward).")
-        recs.append("Check withers clearance + front balance. Consider fitter check or front pad/shim if appropriate.")
+        flags.append("Front-down saddle pitch detected.")
+        recs.append("Check withers clearance and front balance. Use fitter guidance if the saddle appears to tip forward.")
 
     if rock > rock_threshold:
-        flags.append("Higher saddle rocking detected (oscillation over stride).")
-        recs.append("Check panel contact (bridging risk). Try different girthing, pad, or consult saddle fitter.")
+        flags.append("Higher saddle rocking detected across the ride.")
+        recs.append("Check panel contact and girthing. Excessive rock can indicate bridging or unstable support.")
 
     if drift_x > drift_threshold:
-        flags.append("Noticeable saddle drift detected (forward/back or sliding).")
-        recs.append("Review girth placement/tension and pad grip. Round-barrel horses may need stability solutions.")
+        flags.append("Noticeable saddle drift detected.")
+        recs.append("Review girth placement, pad grip, and saddle alignment to reduce movement.")
 
     if shoulder_std > align_threshold or hip_std > align_threshold:
-        flags.append("Shoulder/hip alignment variance detected (uneven rider balance).")
-        recs.append("Coach note: work on even weight in both stirrups; ride straight lines and check saddle straightness.")
+        flags.append("Shoulder/hip alignment variance detected.")
+        recs.append("Work toward even weight in both stirrups and a more level upper body.")
 
     if bounce > bounce_threshold:
-        flags.append("Higher vertical bounce detected in saddle midpoint.")
-        recs.append("Focus on core engagement and softer landing in the saddle to reduce bounce.")
+        flags.append("Higher vertical bounce detected at the saddle midpoint.")
+        recs.append("Use core engagement and a softer follow-through to reduce bounce.")
 
     if clearance_collapse:
-        flags.append(f"Withers clearance risk (min {clearance_min:.1f}px below threshold).")
-        recs.append("Check panel flocking/pad thickness to maintain withers clearance.")
+        flags.append(f"Withers clearance risk detected (minimum {clearance_min:.1f}px).")
+        recs.append("Check tree width, pad thickness, and flocking to preserve withers clearance.")
 
     if bridging_proxy > 4.0:
-        flags.append("Rear vs front clearance variation suggests bridging tendency.")
-        recs.append("Evaluate panel contact; consider shim or refit to reduce bridging.")
+        flags.append("Rear/front clearance variation suggests bridging tendency.")
+        recs.append("Evaluate panel contact and consider a fitter review if bridging persists.")
 
     if cadence == 0.0:
-        recs.append("Cadence not detected (short video or limited motion); film 30-60s with consistent trot/canter for rhythm.")
-    elif cadence < 0.5:
-        recs.append("Rhythm appears slow/irregular; aim for a steady tempo to improve stability.")
+        recs.append("Cadence was not detected cleanly; use a longer, steadier straight-line clip for rhythm analysis.")
+    elif cadence < expected_rhythm_low * 0.65:
+        recs.append("Rhythm appears slower or more irregular than the discipline target.")
 
-    saddle_stability = max(0.0, 100.0 - (rock * 6.0) - (drift_x * 0.5) - (abs(pitch) * 2.0) - ((shoulder_std + hip_std) * 0.5))
-    saddle_stability = int(min(100.0, saddle_stability))
+    seat_offset_norm = normalized(seat_offset)
+    head_offset_norm = normalized(head_offset)
+    torso_norm = abs(torso_mean)
 
-    rider_smoothness = max(0.0, 100.0 - metrics["rock_amplitude_deg"] * 8.0 - metrics["pitch_std_deg"] * 4.0)
-    rider_consistency = max(0.0, 100.0 - (shoulder_std + hip_std) * 3.0)
-    rider_control = max(0.0, 100.0 - drift_x * 0.6)
-    rider_score = int(min(100.0, (rider_smoothness * 0.4 + rider_consistency * 0.3 + rider_control * 0.3)))
+    rider_posture = clamp(
+        100.0
+        - torso_norm * 3.0
+        - pitch_std * 1.4
+        - shoulder_std * 0.7
+        - hip_std * 0.7
+        - head_offset_norm * 0.5
+    )
+    rider_balance = clamp(
+        100.0
+        - drift_x * 0.35
+        - abs(drift_rate) * 7.0
+        - bounce * 1.3
+        - seat_offset_norm * 0.8
+    )
+    rider_symmetry = clamp(
+        100.0
+        - abs(shoulder_std) * 1.8
+        - abs(hip_std) * 1.8
+        - abs(left_knee_mean - right_knee_mean) * 0.8
+        - abs(left_ankle_mean - right_ankle_mean) * 0.8
+        - head_offset_std * 0.15
+    )
+    rider_stability = clamp(
+        100.0
+        - torso_std * 3.5
+        - vertical_motion_std * 0.03
+        - horizontal_motion_std * 0.03
+        - rock * 2.0
+        - bounce * 1.0
+    )
+
+    target_knee = 150.0
+    if discipline_key in {"show_jumping", "eventing", "hunter", "equitation"}:
+        target_knee = 142.0
+    elif discipline_key in {"racing_gallop", "barrel_racing", "polo"}:
+        target_knee = 138.0
+    elif discipline_key in {"dressage", "arena_riding"}:
+        target_knee = 148.0
+
+    knee_mean = _safe_mean([left_knee_mean, right_knee_mean])
+    ankle_mean = _safe_mean([left_ankle_mean, right_ankle_mean])
+    rider_leg_position = clamp(
+        100.0
+        - abs(knee_mean - target_knee) * 0.9
+        - abs(ankle_mean - 160.0) * 0.45
+        - max(left_knee_std, right_knee_std) * 0.6
+        - max(left_ankle_std, right_ankle_std) * 0.4
+        - seat_offset_norm * 0.3
+    )
+    rider_score = _score_value(
+        rider_posture * 0.26
+        + rider_balance * 0.26
+        + rider_symmetry * 0.20
+        + rider_stability * 0.18
+        + rider_leg_position * 0.10
+    )
+
+    horse_movement = clamp(
+        100.0
+        - rock * 3.6
+        - bounce * 1.4
+        - abs(drift_rate) * 4.5
+        - drift_x * 0.15
+    )
+    rhythm_penalty = abs(cadence - expected_rhythm_mid) / max(expected_rhythm_mid, 0.1)
+    horse_rhythm = clamp(100.0 - rhythm_penalty * 70.0 - max(0.0, 1.0 - tracking_conf / 100.0) * 12.0)
+    horse_consistency = clamp(
+        100.0
+        - pitch_std * 2.8
+        - topline_std * 2.2
+        - abs(saddle_topline_diff) * 1.2
+        - abs(drift_rate) * 2.5
+    )
+    horse_symmetry = clamp(
+        100.0
+        - abs(shoulder_std + hip_std) * 1.3
+        - topline_std * 1.5
+        - abs(saddle_topline_diff) * 0.8
+    )
+    horse_topline = clamp(
+        100.0
+        - abs(topline_mean) * 1.2
+        - topline_std * 2.0
+        - max(0.0, 18.0 - clearance_mean) * 1.4
+    )
+
+    saddle_stability = clamp(
+        100.0
+        - rock * (5.2 if saddle_type == "english" else 4.6)
+        - drift_x * 0.35
+        - abs(pitch) * 1.8
+        - (shoulder_std + hip_std) * 0.35
+    )
+    saddle_position = clamp(
+        100.0
+        - abs(pitch - profile_cfg.get("front_down_threshold", -4.0)) * 4.0
+        - max(0.0, 16.0 - clearance_min - profile_clearance_adjust) * 2.2
+        - drift_x * 0.15
+    )
+    saddle_balance = clamp(
+        100.0
+        - abs(saddle_topline_diff) * 1.8
+        - bridging_proxy * 1.8
+        - seat_offset_norm * 0.4
+        - abs(drift_rate) * 3.0
+    )
+
+    discipline_score = clamp(
+        rider_score * float(weights.get("rider", 0.35))
+        + horse_movement * float(weights.get("horse", 0.20))
+        + saddle_stability * float(weights.get("saddle", 0.25))
+        + rider_symmetry * float(weights.get("symmetry", 0.20))
+    )
+    overall_score = clamp(
+        rider_score * 0.30
+        + horse_movement * 0.20
+        + saddle_stability * 0.25
+        + rider_symmetry * 0.10
+        + discipline_score * 0.15
+    )
 
     rider_level = "Beginner"
     if rider_score >= 75:
@@ -860,53 +1590,117 @@ def score_and_recommend(metrics: Dict[str, Any], horse_scheme: str, saddle_type:
     elif rider_score >= 50:
         rider_level = "Intermediate"
 
-    recs.append(f"Rider level estimate: {rider_level} ({rider_score}/100). Focus on steady shoulders/hips and straight lines.")
-
     fit_risk = "Low"
     if len(flags) == 1:
         fit_risk = "Medium"
     elif len(flags) >= 2:
         fit_risk = "High"
 
-    stability_label = "Excellent" if saddle_stability >= 80 else "Good" if saddle_stability >= 55 else "Needs Attention"
-
     coach_good = []
-    if rock < rock_threshold:
-        coach_good.append("Stable rocking across strides.")
-    if drift_x < drift_threshold:
-        coach_good.append("Minimal forward/back drift observed.")
-    if clearance_min and not clearance_collapse:
-        coach_good.append("Withers clearance maintained through the ride.")
+    if rider_posture >= 70:
+        coach_good.append("Rider posture is generally controlled.")
+    if rider_balance >= 70:
+        coach_good.append("Balance stayed reasonably centered over the ride.")
+    if horse_movement >= 70:
+        coach_good.append("Horse movement remained comparatively consistent.")
+    if saddle_stability >= 70:
+        coach_good.append("Saddle movement stayed within a generally stable range.")
 
     coach_improve = []
-    if bounce > bounce_threshold:
-        coach_improve.append("Reduce vertical bounce by engaging core and following the motion.")
-    if shoulder_std > align_threshold or hip_std > align_threshold:
-        coach_improve.append("Equalize weight in both stirrups to level shoulders/hips.")
-    if drift_x > drift_threshold:
-        coach_improve.append("Improve saddle stability with tack adjustments or pad choice.")
+    if rider_stability < 65:
+        coach_improve.append("Reduce upper-body motion and keep the torso quieter through the stride.")
+    if rider_leg_position < 65:
+        coach_improve.append("Maintain a steadier lower leg and keep the heel quietly under the hip.")
+    if horse_rhythm < 65:
+        coach_improve.append("Use a more rhythmic straight-line clip if you want clearer cadence analysis.")
+    if saddle_position < 65:
+        coach_improve.append("Review saddle placement and withers clearance for a more centered position.")
+
+    if not coach_improve:
+        coach_improve.append("Continue repeating the same exercise with consistent rider posture and calm contact.")
 
     drills = [
-        "Posting trot with light contact: focus on even shoulder height for 30s intervals.",
-        "Two-point over ground poles to stabilize core and reduce bounce.",
-        "Ride straight lines with visual markers to monitor drift and alignment.",
+        "Ride straight lines and check that shoulders stay level through the stride.",
+        "Use light two-point or half-seat work to quiet the lower leg and reduce bounce.",
+        "Repeat short intervals and compare the same metrics across sessions for trend tracking.",
     ]
+
+    score_labels = {
+        "overall": band(overall_score),
+        "rider": band(rider_score),
+        "horse_movement": band(horse_movement),
+        "saddle_stability": band(saddle_stability),
+        "symmetry": band(rider_symmetry),
+        "discipline": band(discipline_score),
+        "rider_posture": band(rider_posture),
+        "rider_balance": band(rider_balance),
+        "rider_symmetry": band(rider_symmetry),
+        "rider_stability": band(rider_stability),
+        "rider_leg_position": band(rider_leg_position),
+        "horse_topline": band(horse_topline),
+        "horse_rhythm": band(horse_rhythm),
+        "horse_consistency": band(horse_consistency),
+        "horse_symmetry": band(horse_symmetry),
+        "saddle_position": band(saddle_position),
+        "saddle_balance": band(saddle_balance),
+    }
 
     return {
         "scores": {
-            "saddle_stability": saddle_stability,
-            "stability_label": stability_label,
+            "overall": _score_value(overall_score),
+            "rider": _score_value(rider_score),
+            "rider_score": _score_value(rider_score),
+            "horse_movement": _score_value(horse_movement),
+            "horse_score": _score_value(horse_movement),
+            "saddle_stability": _score_value(saddle_stability),
+            "saddle_score": _score_value(saddle_stability),
+            "symmetry": _score_value(rider_symmetry),
+            "discipline": _score_value(discipline_score),
+            "rider_posture": _score_value(rider_posture),
+            "rider_balance": _score_value(rider_balance),
+            "rider_symmetry": _score_value(rider_symmetry),
+            "rider_stability": _score_value(rider_stability),
+            "rider_leg_position": _score_value(rider_leg_position),
+            "horse_topline": _score_value(horse_topline),
+            "horse_rhythm": _score_value(horse_rhythm),
+            "horse_consistency": _score_value(horse_consistency),
+            "horse_symmetry": _score_value(horse_symmetry),
+            "saddle_position": _score_value(saddle_position),
+            "saddle_balance": _score_value(saddle_balance),
+            "stability_label": band(saddle_stability),
             "fit_risk": fit_risk,
-            "rider_score": rider_score,
             "rider_level": rider_level,
+            "labels": score_labels,
         },
         "tracking_confidence": tracking_conf,
         "flags": flags,
-        "recommendations": recs,
+        "recommendations": recs
+        + [
+            f"Rider level estimate: {rider_level} ({rider_score}/100).",
+        ],
         "coach": {
             "doing_well": coach_good,
             "to_improve": coach_improve,
             "drills": drills,
+        },
+        "context": {
+            "horse_profile": profile_key,
+            "saddle_type": saddle_type,
+            "discipline": discipline_key,
+            "horse_profile_label": str(profile_cfg.get("label", profile_key)),
+            "discipline_label": str(discipline_cfg.get("label", discipline_key)),
+            "discipline_focus": list(discipline_cfg.get("focus", []) or []),
+            "discipline_notes": str(discipline_cfg.get("notes", "")),
+            "expected_rhythm_hz": [expected_rhythm_low, expected_rhythm_high],
+        },
+        "pose_summary": pose_summary,
+        "quality": {
+            "tracking_success_pct": tracking_conf,
+            "pose_confidence_pct": pose_conf,
+            "pose_samples": pose_samples,
+            "analysis_confidence_pct": float(max(0.0, min(100.0, tracking_conf * 0.55 + pose_conf * 0.45))),
+            "pose_available": pose_visible,
+            "pose_estimated": not pose_visible,
         },
     }
 
@@ -1045,7 +1839,14 @@ def ensure_pdf_file(
     pdf_path: str,
 ) -> bool:
     pdf_file = storage.ensure_parent_dir(pdf_path)
-    pdf_html = render_pdf_report_html(analysis_id, meta, metrics, scored, mark_scores)
+    analysis_payload = scored.get("analysis_payload") or build_analysis_payload(
+        analysis_id,
+        meta,
+        metrics,
+        scored,
+        mark_scores=mark_scores,
+    )
+    pdf_html = render_pdf_report_html(analysis_id, meta, metrics, scored, mark_scores, analysis_payload=analysis_payload)
     # Try full PDF via weasyprint; fallback to saving HTML so download never fails.
     pdf_renderer = get_weasyprint()
     if pdf_renderer is not None:
@@ -1307,6 +2108,686 @@ def build_pdf_trend_svg(series: Dict[str, List[float]]) -> str:
     )
 
 
+PROFESSIONAL_DISCLAIMER = (
+    "This analysis provides visual and movement-based indicators and is not a substitute for an in-person assessment "
+    "by a qualified saddle fitter, veterinarian, physiotherapist, or equine professional."
+)
+
+
+def _html_list(items: List[str], empty_msg: str = "No items available.") -> str:
+    if not items:
+        return f"<p class='muted'>{html_escape(empty_msg)}</p>"
+    return "<ul class='list-tight'>" + "".join(f"<li>{html_escape(str(item))}</li>" for item in items) + "</ul>"
+
+
+def _metric_rows(entries: List[Dict[str, Any]]) -> str:
+    rows = []
+    for entry in entries:
+        name = html_escape(str(entry.get("name", "")))
+        display = html_escape(str(entry.get("display", "N/A")))
+        unit = html_escape(str(entry.get("unit", "")))
+        status = html_escape(str(entry.get("status", "Insufficient Data")))
+        source = html_escape(str(entry.get("source", "estimated")))
+        note = html_escape(str(entry.get("note", "")))
+        rows.append(
+            f"<tr><td>{name}</td><td>{display}{(' ' + unit) if unit else ''}</td><td>{status}</td><td>{source}</td><td>{note}</td></tr>"
+        )
+    if not rows:
+        return "<tr><td colspan='5'>No metrics available.</td></tr>"
+    return "".join(rows)
+
+
+def _metric_table_card(title: str, entries: List[Dict[str, Any]], empty_msg: str) -> str:
+    if not entries:
+        return f"""
+        <div class="card">
+          <h3 class="section-title">{html_escape(title)}</h3>
+          <p class="muted">{html_escape(empty_msg)}</p>
+        </div>
+        """
+    return f"""
+    <div class="card">
+      <h3 class="section-title">{html_escape(title)}</h3>
+      <table>
+        <tr><th>Metric</th><th>Value</th><th>Status</th><th>Source</th><th>Notes</th></tr>
+        {_metric_rows(entries)}
+      </table>
+    </div>
+    """
+
+
+def _score_tiles(scores: Dict[str, Any]) -> str:
+    tiles = [
+        ("Overall Score", scores.get("overall", scores.get("rider_score", 0)), scores.get("labels", {}).get("overall", score_band(scores.get("overall"))), "Composite analysis score"),
+        ("Rider Score", scores.get("rider", scores.get("rider_score", 0)), scores.get("labels", {}).get("rider", score_band(scores.get("rider"))), "Posture + balance + symmetry"),
+        ("Horse Movement", scores.get("horse_movement", scores.get("horse_score", 0)), scores.get("labels", {}).get("horse_movement", score_band(scores.get("horse_movement"))), "Cadence + motion consistency"),
+        ("Saddle Stability", scores.get("saddle_stability", scores.get("saddle_score", 0)), scores.get("labels", {}).get("saddle_stability", score_band(scores.get("saddle_stability"))), "Rocking + drift + balance"),
+        ("Symmetry", scores.get("symmetry", 0), scores.get("labels", {}).get("symmetry", score_band(scores.get("symmetry"))), "Rider left/right alignment"),
+    ]
+    html_parts = []
+    for label, value, band, caption in tiles:
+        html_parts.append(
+            f"""
+            <div class="stat">
+              <div class="k">{html_escape(label)}</div>
+              <div class="v">{int(value) if value is not None else "N/A"}</div>
+              <div class="muted">{html_escape(str(band))}</div>
+              <div class="muted" style="margin-top:4px;">{html_escape(caption)}</div>
+            </div>
+            """
+        )
+    return "".join(html_parts)
+
+
+def _comparison_direction(delta: Optional[float], higher_is_better: bool = True, threshold: float = COMPARISON_SIGNIFICANCE_THRESHOLD) -> str:
+    if delta is None:
+        return "No Significant Change"
+    if abs(float(delta)) < float(threshold):
+        return "No Significant Change"
+    if higher_is_better:
+        return "Improved" if float(delta) > 0 else "Declined"
+    return "Improved" if float(delta) < 0 else "Declined"
+
+
+def _comparison_row(metric: str, a: Optional[float], b: Optional[float], higher_is_better: bool = True, threshold: float = COMPARISON_SIGNIFICANCE_THRESHOLD, note: str = "") -> Dict[str, Any]:
+    if a is None or b is None:
+        return model_to_dict(
+            ComparisonRow(
+                metric=metric,
+                ride_a=a,
+                ride_b=b,
+                delta=None,
+                percent_change=None,
+                direction="No Significant Change",
+                note=note or "Insufficient data for comparison.",
+            )
+        )
+    delta = float(b) - float(a)
+    percent_change = None if abs(float(a)) < 1e-6 else (delta / float(a)) * 100.0
+    direction = _comparison_direction(delta, higher_is_better=higher_is_better, threshold=threshold)
+    return model_to_dict(
+        ComparisonRow(
+            metric=metric,
+            ride_a=float(a),
+            ride_b=float(b),
+            delta=float(delta),
+            percent_change=float(percent_change) if percent_change is not None else None,
+            direction=direction,
+            note=note,
+        )
+    )
+
+
+def _build_metric_collection(scores: Dict[str, Any], pose_summary: Dict[str, Any], metrics: Dict[str, Any], discipline_cfg: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    pose_data = pose_summary.get("summary", {}) or {}
+    pose_available = bool(pose_summary.get("available", False))
+    pose_source = "measured" if pose_available else "estimated"
+    raw_source = "measured"
+
+    rider_metrics = [
+        model_to_dict(make_metric_entry("Overall Rider Score", scores.get("rider"), "/100", score_band(scores.get("rider")), "measured", "Composite of posture, balance, symmetry, stability, and leg position.", 0)),
+        model_to_dict(make_metric_entry("Rider Posture", scores.get("rider_posture"), "/100", score_band(scores.get("rider_posture")), pose_source, "Derived from torso alignment, head offset, and shoulder level variance.", 0)),
+        model_to_dict(make_metric_entry("Rider Balance", scores.get("rider_balance"), "/100", score_band(scores.get("rider_balance")), pose_source, "Uses seat offset, drift, bounce, and upper-body control.", 0)),
+        model_to_dict(make_metric_entry("Rider Symmetry", scores.get("rider_symmetry"), "/100", score_band(scores.get("rider_symmetry")), pose_source, "Uses left/right shoulder, hip, knee, and ankle balance.", 0)),
+        model_to_dict(make_metric_entry("Rider Stability", scores.get("rider_stability"), "/100", score_band(scores.get("rider_stability")), pose_source, "Uses torso variability, vertical motion, and rocking.", 0)),
+        model_to_dict(make_metric_entry("Rider Leg Position", scores.get("rider_leg_position"), "/100", score_band(scores.get("rider_leg_position")), pose_source, "Uses knee/ankle angles and lower-leg steadiness.", 0)),
+        model_to_dict(make_metric_entry("Torso Angle", pose_data.get("torso_angle_mean_deg"), "deg", evidence_status(pose_available), pose_source, "Lower values mean a more vertical torso.", 1)),
+        model_to_dict(make_metric_entry("Head Alignment", pose_data.get("head_alignment_mean_px"), "px", evidence_status(pose_available), pose_source, "Horizontal offset between the head and shoulder line.", 1)),
+        model_to_dict(make_metric_entry("Seat Offset", pose_data.get("seat_center_offset_px_mean"), "px", evidence_status(pose_available), pose_source, "Horizontal offset from the saddle midpoint.", 1)),
+        model_to_dict(make_metric_entry("Shoulder Level Variance", pose_data.get("shoulder_level_std_px"), "px", evidence_status(pose_available), pose_source, "How level the rider shoulders stay through time.", 1)),
+        model_to_dict(make_metric_entry("Hip Level Variance", pose_data.get("hip_level_std_px"), "px", evidence_status(pose_available), pose_source, "How level the rider hips stay through time.", 1)),
+        model_to_dict(make_metric_entry("Left Knee Angle", pose_data.get("left_knee_angle_mean_deg"), "deg", evidence_status(pose_available), pose_source, "Average left knee opening.", 1)),
+        model_to_dict(make_metric_entry("Right Knee Angle", pose_data.get("right_knee_angle_mean_deg"), "deg", evidence_status(pose_available), pose_source, "Average right knee opening.", 1)),
+    ]
+
+    horse_metrics = [
+        model_to_dict(make_metric_entry("Horse Movement Score", scores.get("horse_movement"), "/100", score_band(scores.get("horse_movement")), raw_source, "Composite of cadence, drift, rock amplitude, and motion consistency.", 0)),
+        model_to_dict(make_metric_entry("Horse Rhythm", scores.get("horse_rhythm"), "/100", score_band(scores.get("horse_rhythm")), raw_source, "Rhythm compared with the expected range for the selected discipline.", 0)),
+        model_to_dict(make_metric_entry("Horse Consistency", scores.get("horse_consistency"), "/100", score_band(scores.get("horse_consistency")), raw_source, "Measures repeatability of motion and topline stability.", 0)),
+        model_to_dict(make_metric_entry("Horse Symmetry", scores.get("horse_symmetry"), "/100", score_band(scores.get("horse_symmetry")), raw_source, "Side-view proxy for left/right consistency and topline evenness.", 0)),
+        model_to_dict(make_metric_entry("Horse Topline", scores.get("horse_topline"), "/100", score_band(scores.get("horse_topline")), raw_source, "Topline consistency and backline steadiness.", 0)),
+        model_to_dict(make_metric_entry("Cadence", metrics.get("cadence_hz"), "Hz", evidence_status(True), raw_source, "Detected cadence from tracked motion.", 2)),
+        model_to_dict(make_metric_entry("Rock Amplitude", metrics.get("rock_amplitude_deg"), "deg", evidence_status(True), raw_source, "Stride-to-stride rocking amplitude.", 2)),
+        model_to_dict(make_metric_entry("Drift X", metrics.get("mid_drift_x_px"), "px", evidence_status(True), raw_source, "Horizontal saddle drift across the ride.", 2)),
+    ]
+
+    saddle_metrics = [
+        model_to_dict(make_metric_entry("Saddle Stability", scores.get("saddle_stability"), "/100", score_band(scores.get("saddle_stability")), raw_source, "Overall saddle motion, rocking, and drift stability.", 0)),
+        model_to_dict(make_metric_entry("Saddle Position", scores.get("saddle_position"), "/100", score_band(scores.get("saddle_position")), raw_source, "Centeredness and clearance balance.", 0)),
+        model_to_dict(make_metric_entry("Rider-Saddle Balance", scores.get("saddle_balance"), "/100", score_band(scores.get("saddle_balance")), raw_source, "Relationship between rider position and saddle movement.", 0)),
+        model_to_dict(make_metric_entry("Withers Clearance", metrics.get("alignment", {}).get("withers_clearance_min_px"), "px", evidence_status(True), raw_source, "Minimum visible clearance proxy.", 1)),
+        model_to_dict(make_metric_entry("Bridging Proxy", metrics.get("alignment", {}).get("bridging_proxy"), "px", evidence_status(True), raw_source, "Front/rear clearance variation proxy.", 2)),
+    ]
+
+    discipline_priority = list(discipline_cfg.get("priority_metrics", []) or [])
+    discipline_lookup = {
+        "Rider Balance": ("rider_balance", "Balanced seat, drift, and bounce"),
+        "Rider Posture": ("rider_posture", "Torso and upper-body control"),
+        "Rider Symmetry": ("rider_symmetry", "Left/right consistency"),
+        "Seat Stability": ("rider_stability", "Lower upper-body variation is better"),
+        "Posture": ("rider_posture", "Torso and shoulder control"),
+        "Horse Rhythm": ("horse_rhythm", "Cadence against the discipline target"),
+        "Horse Movement": ("horse_movement", "Overall motion stability"),
+        "Horse Consistency": ("horse_consistency", "Repeatability of motion"),
+        "Horse Symmetry": ("horse_symmetry", "Side-view symmetry proxy"),
+        "Saddle Stability": ("saddle_stability", "Rocking and drift control"),
+        "Saddle Position": ("saddle_position", "Centeredness and clearance"),
+        "Saddle Balance": ("saddle_balance", "Rider-saddle relationship"),
+        "Lower-Leg Stability": ("rider_leg_position", "Leg quietness and consistency"),
+        "Hip Angle": ("rider_leg_position", "Target hip angle varies by discipline"),
+        "Knee Angle": ("rider_leg_position", "Target knee angle varies by discipline"),
+        "Dynamic Balance": ("rider_balance", "Movement under dynamic work"),
+    }
+    discipline_metrics: List[Dict[str, Any]] = []
+    for label in discipline_priority[:5]:
+        score_key, note = discipline_lookup.get(label, (None, discipline_cfg.get("notes", "")))
+        if score_key and score_key in scores:
+            discipline_metrics.append(
+                model_to_dict(
+                    make_metric_entry(
+                        label,
+                        scores.get(score_key),
+                        "/100",
+                        score_band(scores.get(score_key)),
+                        pose_source if score_key.startswith("rider") else raw_source,
+                        note,
+                        0,
+                    )
+                )
+            )
+        else:
+            discipline_metrics.append(
+                model_to_dict(
+                    make_metric_entry(
+                        label,
+                        None,
+                        "/100",
+                        "Insufficient Data",
+                        "insufficient",
+                        str(discipline_cfg.get("notes", "")),
+                        0,
+                    )
+                )
+            )
+
+    return {
+        "rider_metrics": rider_metrics,
+        "horse_metrics": horse_metrics,
+        "saddle_metrics": saddle_metrics,
+        "discipline_metrics": discipline_metrics,
+    }
+
+
+def build_analysis_payload(
+    analysis_id: str,
+    meta: Dict[str, Any],
+    metrics: Dict[str, Any],
+    scored: Dict[str, Any],
+    points: Optional[Dict[str, List[float]]] = None,
+    pose_summary: Optional[Dict[str, Any]] = None,
+    mark_scores: Optional[Dict[str, Dict[str, Any]]] = None,
+    created_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    horse_profile, discipline, saddle_type = resolve_analysis_context(meta)
+    profile_cfg = get_profile_config(horse_profile)
+    discipline_cfg = get_discipline_config(discipline)
+    pose_summary = pose_summary or scored.get("pose_summary", {}) or {}
+    mark_scores = mark_scores or compute_mark_scores(metrics, scored)
+    scores = scored.get("scores", {}) or {}
+    metric_groups = _build_metric_collection(scores, pose_summary, metrics, discipline_cfg)
+    quality = dict(scored.get("quality", {}) or {})
+    quality.setdefault("tracking_success_pct", float(metrics.get("tracking", {}).get("tracking_success_pct", 0.0) or 0.0))
+    quality.setdefault("pose_confidence_pct", float(pose_summary.get("confidence_pct", 0.0) or 0.0))
+    quality.setdefault("analysis_confidence_pct", float(max(0.0, min(100.0, quality.get("tracking_success_pct", 0.0) * 0.55 + quality.get("pose_confidence_pct", 0.0) * 0.45))))
+    quality.setdefault("frames_analyzed", int(metrics.get("frames_analyzed", 0) or 0))
+    quality.setdefault("duration_sec", float(metrics.get("duration_sec", 0.0) or 0.0))
+    quality.setdefault("missing_data", [])
+    if not pose_summary.get("available", False):
+        quality["missing_data"].append("Rider joint angles could not be measured reliably.")
+    if float(metrics.get("cadence_hz", 0.0) or 0.0) <= 0.0:
+        quality["missing_data"].append("Cadence could not be inferred from the available motion.")
+
+    strengths: List[str] = []
+    improvement: List[str] = []
+    score_pairs = [
+        ("Overall analysis", scores.get("overall", 0)),
+        ("Rider posture", scores.get("rider_posture", 0)),
+        ("Rider balance", scores.get("rider_balance", 0)),
+        ("Rider symmetry", scores.get("rider_symmetry", 0)),
+        ("Rider stability", scores.get("rider_stability", 0)),
+        ("Rider leg position", scores.get("rider_leg_position", 0)),
+        ("Horse movement", scores.get("horse_movement", 0)),
+        ("Horse rhythm", scores.get("horse_rhythm", 0)),
+        ("Horse consistency", scores.get("horse_consistency", 0)),
+        ("Horse symmetry", scores.get("horse_symmetry", 0)),
+        ("Saddle stability", scores.get("saddle_stability", 0)),
+        ("Saddle position", scores.get("saddle_position", 0)),
+        ("Rider-saddle balance", scores.get("saddle_balance", 0)),
+    ]
+    for label, value in score_pairs:
+        if value >= 75:
+            strengths.append(f"{label}: {int(value)}/100")
+        elif value < 60:
+            improvement.append(f"{label}: {int(value)}/100")
+
+    recommendations: List[str] = []
+    for item in scored.get("recommendations", []) or []:
+        if item not in recommendations:
+            recommendations.append(item)
+    for item in scored.get("coach", {}).get("to_improve", []) or []:
+        if item not in recommendations:
+            recommendations.append(item)
+    discipline_note = str(discipline_cfg.get("notes", ""))
+    if discipline_note and discipline_note not in recommendations:
+        recommendations.append(discipline_note)
+
+    visual_evidence = {
+        "annotated_frame": pose_summary.get("annotated_frame", ""),
+        "best_frame_index": pose_summary.get("best_frame_index"),
+        "track_chart": build_pdf_trend_svg(metrics.get("series", {}) or {}),
+        "frame_count": int(metrics.get("frames_analyzed", 0) or 0),
+        "points": points or {},
+    }
+
+    summary_cards = {
+        "overall": scores.get("overall", 0),
+        "rider": scores.get("rider", scores.get("rider_score", 0)),
+        "horse_movement": scores.get("horse_movement", scores.get("horse_score", 0)),
+        "saddle_stability": scores.get("saddle_stability", scores.get("saddle_score", 0)),
+        "symmetry": scores.get("symmetry", 0),
+        "discipline": scores.get("discipline", 0),
+    }
+
+    payload = {
+        "analysis_id": analysis_id,
+        "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+        "video_metadata": model_to_dict(build_video_metadata(meta, metrics)),
+        "horse_profile": horse_profile,
+        "saddle_type": saddle_type,
+        "discipline": discipline,
+        "confidence": float(quality.get("analysis_confidence_pct", 0.0) or 0.0),
+        "scores": scores,
+        "rider_metrics": metric_groups["rider_metrics"],
+        "horse_metrics": metric_groups["horse_metrics"],
+        "saddle_metrics": metric_groups["saddle_metrics"],
+        "discipline_metrics": metric_groups["discipline_metrics"],
+        "strengths": strengths,
+        "areas_for_improvement": improvement,
+        "recommendations": recommendations,
+        "visual_evidence": visual_evidence,
+        "quality": quality,
+        "disclaimer": PROFESSIONAL_DISCLAIMER,
+        "report_url": f"/report/{analysis_id}",
+        "pdf_url": f"/report/{analysis_id}.pdf",
+        "horse_profile_label": str(profile_cfg.get("label", horse_profile)),
+        "discipline_label": str(discipline_cfg.get("label", discipline)),
+        "discipline_focus": list(discipline_cfg.get("focus", []) or []),
+        "discipline_notes": str(discipline_cfg.get("notes", "")),
+        "summary_cards": summary_cards,
+        "mark_scores": mark_scores,
+        "metrics": metrics,
+        "pose_summary": pose_summary,
+        "calibration_points": points or {},
+        "points": points or {},
+        "scores_alias": {
+            "overall": scores.get("overall", 0),
+            "rider_score": scores.get("rider", scores.get("rider_score", 0)),
+            "horse_score": scores.get("horse_movement", scores.get("horse_score", 0)),
+            "saddle_score": scores.get("saddle_stability", scores.get("saddle_score", 0)),
+        },
+        "flags": scored.get("flags", []) or [],
+        "coach": scored.get("coach", {}) or {},
+        "gear_assessment": scored.get("gear_assessment", {}) or {},
+        "gear_detection": scored.get("gear_detection", {}) or {},
+        "gear_used": scored.get("gear_used", {}) or {},
+        "analysis_sections_html": "",
+    }
+    payload["analysis_sections_html"] = build_analysis_sections_html(payload)
+    return payload
+
+
+def build_analysis_sections_html(analysis: Dict[str, Any]) -> str:
+    scores = analysis.get("scores", {}) or {}
+    metrics = analysis.get("metrics", {}) or {}
+    pose_summary = analysis.get("pose_summary", {}) or {}
+    quality = analysis.get("quality", {}) or {}
+    video_meta = analysis.get("video_metadata", {}) or {}
+
+    executive_summary = (
+        f"Overall score {int(scores.get('overall', 0))} with rider score {int(scores.get('rider', scores.get('rider_score', 0)))}. "
+        f"Horse movement scored {int(scores.get('horse_movement', scores.get('horse_score', 0)))} and saddle stability scored {int(scores.get('saddle_stability', scores.get('saddle_score', 0)))}. "
+        f"Discipline focus: {analysis.get('discipline_label', analysis.get('discipline', 'General Riding'))}."
+    )
+
+    rider_entries = analysis.get("rider_metrics", []) or []
+    horse_entries = analysis.get("horse_metrics", []) or []
+    saddle_entries = analysis.get("saddle_metrics", []) or []
+    discipline_entries = analysis.get("discipline_metrics", []) or []
+    rider_posture_entries = [e for e in rider_entries if e.get("name") in {"Rider Posture", "Torso Angle", "Head Alignment", "Shoulder Level Variance", "Hip Level Variance"}]
+    rider_balance_entries = [e for e in rider_entries if e.get("name") in {"Rider Balance", "Seat Offset", "Head Alignment"}]
+    rider_joint_entries = [e for e in rider_entries if e.get("name") in {"Left Knee Angle", "Right Knee Angle", "Torso Angle"}]
+    rider_stability_entries = [e for e in rider_entries if e.get("name") in {"Rider Stability", "Shoulder Level Variance", "Hip Level Variance", "Rider Symmetry", "Rider Leg Position"}]
+    horse_movement_entries = [e for e in horse_entries if e.get("name") in {"Horse Movement Score", "Horse Rhythm", "Horse Consistency", "Cadence", "Rock Amplitude", "Drift X"}]
+    horse_symmetry_entries = [e for e in horse_entries if e.get("name") in {"Horse Symmetry", "Horse Topline"}]
+    saddle_analysis_entries = [e for e in saddle_entries if e.get("name") in {"Saddle Stability", "Saddle Position", "Rider-Saddle Balance", "Withers Clearance", "Bridging Proxy"}]
+
+    sections = [
+        f"""
+        <div class="card">
+          <h3 class="section-title">Executive Summary</h3>
+          <p>{html_escape(executive_summary)}</p>
+          <div class="grid">
+            {_score_tiles(scores)}
+          </div>
+          <div class="grid two" style="margin-top:12px;">
+            <div>
+              <div class="k">Video</div>
+              <p class="muted">{html_escape(str(video_meta.get("filename", "")))}</p>
+              <p class="muted">Frames analyzed: {int(metrics.get("frames_analyzed", 0) or 0)} | Confidence: {float(quality.get("analysis_confidence_pct", analysis.get("confidence", 0.0))):.1f}%</p>
+            </div>
+            <div>
+              <div class="k">Discipline context</div>
+              <p class="muted">{html_escape(str(analysis.get("discipline_notes", "")))}</p>
+            </div>
+          </div>
+        </div>
+        """,
+        _metric_table_card("Rider Posture Analysis", rider_posture_entries, "Not enough pose confidence to calculate rider posture reliably."),
+        _metric_table_card("Rider Balance Analysis", rider_balance_entries, "Not enough pose confidence to calculate rider balance reliably."),
+        _metric_table_card("Rider Joint Angles", rider_joint_entries, "Joint angles are not available from the current video angle."),
+        _metric_table_card("Rider Stability Analysis", rider_stability_entries, "Rider stability could not be measured with enough confidence."),
+        _metric_table_card("Horse Movement Analysis", horse_movement_entries, "Horse movement metrics were not available from the extracted motion."),
+        _metric_table_card("Horse Symmetry Analysis", horse_symmetry_entries, "Horse symmetry is limited by the side-view camera perspective."),
+        _metric_table_card("Saddle Stability Analysis", saddle_analysis_entries, "Saddle stability indicators were not strong enough to score confidently."),
+        _metric_table_card("Discipline-Specific Analysis", discipline_entries, "Discipline-specific metrics were not available."),
+        f"""
+        <div class="card">
+          <h3 class="section-title">Visual Evidence</h3>
+          <div class="grid two">
+            <div>
+              <img src="{html_escape(str(analysis.get('visual_evidence', {}).get('annotated_frame', '')))}" alt="Annotated analysis frame" style="width:100%; border-radius:14px; border:1px solid #e2e8f0; background:#0f172a;" />
+              <p class="muted" style="margin-top:8px;">Annotated representative frame with detected saddle and rider reference points.</p>
+            </div>
+            <div>
+              <div class="viz">{build_pdf_trend_svg(metrics.get("series", {}) or {})}</div>
+              <p class="muted" style="margin-top:8px;">Motion trend summary from the extracted tracking series.</p>
+            </div>
+          </div>
+        </div>
+        """,
+        f"""
+        <div class="card">
+          <h3 class="section-title">Key Strengths</h3>
+          {_html_list(analysis.get("strengths", []) or [], "No strong areas were isolated with enough confidence.")}
+        </div>
+        """,
+        f"""
+        <div class="card">
+          <h3 class="section-title">Areas for Improvement</h3>
+          {_html_list(analysis.get("areas_for_improvement", []) or [], "No major areas for improvement were isolated.")}
+        </div>
+        """,
+        f"""
+        <div class="card">
+          <h3 class="section-title">Recommendations</h3>
+          {_html_list(analysis.get("recommendations", []) or [], "No actionable recommendations were generated.")}
+        </div>
+        """,
+        f"""
+        <div class="card">
+          <h3 class="section-title">Data Quality / Confidence</h3>
+          <table>
+            <tr><td>Tracking success</td><td>{float(quality.get('tracking_success_pct', metrics.get('tracking', {}).get('tracking_success_pct', 0.0))):.1f}%</td></tr>
+            <tr><td>Pose confidence</td><td>{float(quality.get('pose_confidence_pct', pose_summary.get('confidence_pct', 0.0))):.1f}%</td></tr>
+            <tr><td>Analysis confidence</td><td>{float(quality.get('analysis_confidence_pct', analysis.get('confidence', 0.0))):.1f}%</td></tr>
+            <tr><td>Pose samples</td><td>{int(quality.get('pose_samples', pose_summary.get('sample_count', 0)) or 0)}</td></tr>
+            <tr><td>Frames analyzed</td><td>{int(quality.get('frames_analyzed', metrics.get('frames_analyzed', 0)) or 0)}</td></tr>
+            <tr><td>Missing data</td><td>{html_escape("; ".join(quality.get('missing_data', []) or ["None"]))}</td></tr>
+          </table>
+        </div>
+        """,
+        f"""
+        <div class="card">
+          <h3 class="section-title">Professional Disclaimer</h3>
+          <p class="muted">{html_escape(str(analysis.get("disclaimer", PROFESSIONAL_DISCLAIMER)))}</p>
+        </div>
+        """,
+    ]
+    return "\n".join(sections)
+
+
+def build_comparison_payload(
+    comparison_id: str,
+    meta: Dict[str, Any],
+    label_a: str,
+    label_b: str,
+    analysis_a: Dict[str, Any],
+    analysis_b: Dict[str, Any],
+    created_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    horse_profile, discipline, saddle_type = resolve_analysis_context(meta)
+    scores_a = analysis_a.get("scores", {}) or {}
+    scores_b = analysis_b.get("scores", {}) or {}
+    metrics_a = analysis_a.get("metrics", {}) or {}
+    metrics_b = analysis_b.get("metrics", {}) or {}
+    quality_a = analysis_a.get("quality", {}) or {}
+    quality_b = analysis_b.get("quality", {}) or {}
+    discipline_cfg = get_discipline_config(discipline)
+
+    comparison_rows = [
+        _comparison_row("Overall Score", scores_a.get("overall", 0), scores_b.get("overall", 0), True, note="Composite score across rider, horse, saddle, and discipline."),
+        _comparison_row("Rider Score", scores_a.get("rider", scores_a.get("rider_score", 0)), scores_b.get("rider", scores_b.get("rider_score", 0)), True, note="Posture, balance, symmetry, stability, and leg position."),
+        _comparison_row("Horse Movement", scores_a.get("horse_movement", scores_a.get("horse_score", 0)), scores_b.get("horse_movement", scores_b.get("horse_score", 0)), True, note="Motion consistency and cadence proxy."),
+        _comparison_row("Saddle Stability", scores_a.get("saddle_stability", scores_a.get("saddle_score", 0)), scores_b.get("saddle_stability", scores_b.get("saddle_score", 0)), True, note="Rocking and drift stability."),
+        _comparison_row("Symmetry", scores_a.get("symmetry", 0), scores_b.get("symmetry", 0), True, note="Left/right rider and horse balance."),
+        _comparison_row("Discipline Score", scores_a.get("discipline", 0), scores_b.get("discipline", 0), True, note=str(discipline_cfg.get("notes", ""))),
+        _comparison_row("Rider Posture", scores_a.get("rider_posture", 0), scores_b.get("rider_posture", 0), True),
+        _comparison_row("Rider Balance", scores_a.get("rider_balance", 0), scores_b.get("rider_balance", 0), True),
+        _comparison_row("Rider Symmetry", scores_a.get("rider_symmetry", 0), scores_b.get("rider_symmetry", 0), True),
+        _comparison_row("Rider Stability", scores_a.get("rider_stability", 0), scores_b.get("rider_stability", 0), True),
+        _comparison_row("Rider Leg Position", scores_a.get("rider_leg_position", 0), scores_b.get("rider_leg_position", 0), True),
+        _comparison_row("Horse Rhythm", scores_a.get("horse_rhythm", 0), scores_b.get("horse_rhythm", 0), True),
+        _comparison_row("Horse Consistency", scores_a.get("horse_consistency", 0), scores_b.get("horse_consistency", 0), True),
+        _comparison_row("Horse Topline", scores_a.get("horse_topline", 0), scores_b.get("horse_topline", 0), True),
+        _comparison_row("Horse Symmetry", scores_a.get("horse_symmetry", 0), scores_b.get("horse_symmetry", 0), True),
+        _comparison_row("Saddle Position", scores_a.get("saddle_position", 0), scores_b.get("saddle_position", 0), True),
+        _comparison_row("Rider-Saddle Balance", scores_a.get("saddle_balance", 0), scores_b.get("saddle_balance", 0), True),
+        _comparison_row("Rock Amplitude", metrics_a.get("rock_amplitude_deg", 0.0), metrics_b.get("rock_amplitude_deg", 0.0), False, note="Lower rocking amplitude is better."),
+        _comparison_row("Drift X", metrics_a.get("mid_drift_x_px", 0.0), metrics_b.get("mid_drift_x_px", 0.0), False, note="Lower drift means more stable alignment."),
+        _comparison_row("Cadence", metrics_a.get("cadence_hz", 0.0), metrics_b.get("cadence_hz", 0.0), True, note="Compare against the discipline rhythm target."),
+    ]
+
+    stable_metrics = [row for row in comparison_rows if row["direction"] == "No Significant Change"]
+    improved_metrics = [row for row in comparison_rows if row["direction"] == "Improved"]
+    declined_metrics = [row for row in comparison_rows if row["direction"] == "Declined"]
+
+    def summary_sentence() -> str:
+        if scores_b.get("rider_stability", 0) >= scores_a.get("rider_stability", 0) + COMPARISON_SIGNIFICANCE_THRESHOLD:
+            pieces = ["Ride B showed improved rider stability."]
+        elif scores_b.get("rider_stability", 0) + COMPARISON_SIGNIFICANCE_THRESHOLD <= scores_a.get("rider_stability", 0):
+            pieces = ["Ride B showed reduced rider stability."]
+        else:
+            pieces = []
+        if scores_b.get("horse_movement", 0) >= scores_a.get("horse_movement", 0) + COMPARISON_SIGNIFICANCE_THRESHOLD:
+            pieces.append("Horse movement consistency improved in Ride B.")
+        if scores_b.get("saddle_stability", 0) >= scores_a.get("saddle_stability", 0) + COMPARISON_SIGNIFICANCE_THRESHOLD:
+            pieces.append("Saddle stability was better in Ride B.")
+        if not pieces:
+            pieces.append("The rides were broadly similar across the measured metrics.")
+        return " ".join(pieces)
+
+    def key_metric_entry(label: str, value: Any, source: str = "measured") -> Dict[str, Any]:
+        return model_to_dict(make_metric_entry(label, value, "/100", score_band(value if isinstance(value, (int, float)) else None), source, "", 0))
+
+    comparison_payload = {
+        "comparison_id": comparison_id,
+        "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+        "horse_profile": horse_profile,
+        "saddle_type": saddle_type,
+        "discipline": discipline,
+        "overall_summary": summary_sentence(),
+        "ride_a": {
+            "analysis_id": analysis_a.get("analysis_id", ""),
+            "video_metadata": analysis_a.get("video_metadata", {}),
+            "horse_profile": analysis_a.get("horse_profile", horse_profile),
+            "saddle_type": analysis_a.get("saddle_type", saddle_type),
+            "discipline": analysis_a.get("discipline", discipline),
+            "confidence": float(quality_a.get("analysis_confidence_pct", analysis_a.get("confidence", 0.0)) or 0.0),
+            "scores": scores_a,
+            "key_metrics": [
+                key_metric_entry("Rider Score", scores_a.get("rider", scores_a.get("rider_score", 0))),
+                key_metric_entry("Horse Movement", scores_a.get("horse_movement", scores_a.get("horse_score", 0))),
+                key_metric_entry("Saddle Stability", scores_a.get("saddle_stability", scores_a.get("saddle_score", 0))),
+                key_metric_entry("Symmetry", scores_a.get("symmetry", 0)),
+            ],
+        },
+        "ride_b": {
+            "analysis_id": analysis_b.get("analysis_id", ""),
+            "video_metadata": analysis_b.get("video_metadata", {}),
+            "horse_profile": analysis_b.get("horse_profile", horse_profile),
+            "saddle_type": analysis_b.get("saddle_type", saddle_type),
+            "discipline": analysis_b.get("discipline", discipline),
+            "confidence": float(quality_b.get("analysis_confidence_pct", analysis_b.get("confidence", 0.0)) or 0.0),
+            "scores": scores_b,
+            "key_metrics": [
+                key_metric_entry("Rider Score", scores_b.get("rider", scores_b.get("rider_score", 0))),
+                key_metric_entry("Horse Movement", scores_b.get("horse_movement", scores_b.get("horse_score", 0))),
+                key_metric_entry("Saddle Stability", scores_b.get("saddle_stability", scores_b.get("saddle_score", 0))),
+                key_metric_entry("Symmetry", scores_b.get("symmetry", 0)),
+            ],
+        },
+        "comparisons": comparison_rows,
+        "strengths": [row["metric"] for row in improved_metrics[:5]],
+        "areas_for_improvement": [row["metric"] for row in declined_metrics[:5]],
+        "recommendations": [
+            "Repeat the same test conditions if you want a cleaner apples-to-apples comparison.",
+            "Prioritize the metrics that changed beyond the significance threshold.",
+        ],
+        "visual_evidence": {
+            "ride_a_frame": analysis_a.get("visual_evidence", {}).get("annotated_frame", ""),
+            "ride_b_frame": analysis_b.get("visual_evidence", {}).get("annotated_frame", ""),
+            "ride_a_chart": analysis_a.get("visual_evidence", {}).get("track_chart", ""),
+            "ride_b_chart": analysis_b.get("visual_evidence", {}).get("track_chart", ""),
+        },
+        "quality": {
+            "ride_a_confidence_pct": float(quality_a.get("analysis_confidence_pct", analysis_a.get("confidence", 0.0)) or 0.0),
+            "ride_b_confidence_pct": float(quality_b.get("analysis_confidence_pct", analysis_b.get("confidence", 0.0)) or 0.0),
+            "ride_a_pose_confidence_pct": float(quality_a.get("pose_confidence_pct", analysis_a.get("pose_summary", {}).get("confidence_pct", 0.0)) or 0.0),
+            "ride_b_pose_confidence_pct": float(quality_b.get("pose_confidence_pct", analysis_b.get("pose_summary", {}).get("confidence_pct", 0.0)) or 0.0),
+            "ride_a_frames": int(metrics_a.get("frames_analyzed", 0) or 0),
+            "ride_b_frames": int(metrics_b.get("frames_analyzed", 0) or 0),
+        },
+        "disclaimer": PROFESSIONAL_DISCLAIMER,
+        "report_url": f"/compare_report/{comparison_id}",
+        "pdf_url": f"/compare_report/{comparison_id}.pdf",
+        "analysis_a": analysis_a,
+        "analysis_b": analysis_b,
+        "comparison_rows_table": comparison_rows,
+        "stable_metrics": stable_metrics,
+        "improved_metrics": improved_metrics,
+        "declined_metrics": declined_metrics,
+        "comparison_sections_html": "",
+    }
+    comparison_payload["comparison_sections_html"] = build_comparison_sections_html(comparison_payload)
+    return comparison_payload
+
+
+def build_comparison_sections_html(comparison: Dict[str, Any]) -> str:
+    ride_a = comparison.get("ride_a", {}) or {}
+    ride_b = comparison.get("ride_b", {}) or {}
+    comparisons = comparison.get("comparisons", []) or []
+    visual = comparison.get("visual_evidence", {}) or {}
+
+    def rows_for(metric_names: List[str]) -> str:
+        rows = []
+        for row in comparisons:
+            if row.get("metric") not in metric_names:
+                continue
+            rows.append(
+                f"<tr><td>{html_escape(str(row.get('metric', '')))}</td><td>{row.get('ride_a', 'N/A')}</td><td>{row.get('ride_b', 'N/A')}</td><td>{row.get('delta', 'N/A')}</td><td>{html_escape(str(row.get('direction', 'No Significant Change')))}</td><td>{html_escape(str(row.get('note', '')))}</td></tr>"
+            )
+        if not rows:
+            return "<tr><td colspan='6'>No comparison rows available.</td></tr>"
+        return "".join(rows)
+
+    def comp_card(title: str, metric_names: List[str]) -> str:
+        return f"""
+        <div class="card">
+          <h3 class="section-title">{html_escape(title)}</h3>
+          <table>
+            <tr><th>Metric</th><th>Ride A</th><th>Ride B</th><th>Delta</th><th>Direction</th><th>Note</th></tr>
+            {rows_for(metric_names)}
+          </table>
+        </div>
+        """
+
+    summary_cards = f"""
+    <div class="grid">
+      <div class="stat"><div class="k">Ride A overall</div><div class="v">{int(ride_a.get('scores', {}).get('overall', 0))}</div><div class="muted">{html_escape(score_band(ride_a.get('scores', {}).get('overall', 0)))}</div></div>
+      <div class="stat"><div class="k">Ride B overall</div><div class="v">{int(ride_b.get('scores', {}).get('overall', 0))}</div><div class="muted">{html_escape(score_band(ride_b.get('scores', {}).get('overall', 0)))}</div></div>
+      <div class="stat"><div class="k">Ride A rider</div><div class="v">{int(ride_a.get('scores', {}).get('rider', ride_a.get('scores', {}).get('rider_score', 0)))}</div><div class="muted">{html_escape(score_band(ride_a.get('scores', {}).get('rider', ride_a.get('scores', {}).get('rider_score', 0))))}</div></div>
+      <div class="stat"><div class="k">Ride B rider</div><div class="v">{int(ride_b.get('scores', {}).get('rider', ride_b.get('scores', {}).get('rider_score', 0)))}</div><div class="muted">{html_escape(score_band(ride_b.get('scores', {}).get('rider', ride_b.get('scores', {}).get('rider_score', 0))))}</div></div>
+    </div>
+    """
+
+    discipline_metric_names = ["Horse Rhythm", "Rider Balance", "Rider Posture", "Saddle Stability", "Rider Leg Position", "Horse Movement", "Horse Consistency", "Horse Topline"]
+    return f"""
+    <div class="card">
+      <h3 class="section-title">Executive Comparison</h3>
+      <p>{html_escape(str(comparison.get("overall_summary", "")))}</p>
+      <div class="grid two">
+        <div>
+          <div class="k">Ride A</div>
+          <p class="muted">Analysis {html_escape(str(ride_a.get("analysis_id", "")))} | Confidence {float(ride_a.get("confidence", 0.0)):.1f}%</p>
+        </div>
+        <div>
+          <div class="k">Ride B</div>
+          <p class="muted">Analysis {html_escape(str(ride_b.get("analysis_id", "")))} | Confidence {float(ride_b.get("confidence", 0.0)):.1f}%</p>
+        </div>
+      </div>
+      {summary_cards}
+    </div>
+    <div class="card">
+      <h3 class="section-title">Side-by-Side Visual Frames</h3>
+      <div class="grid two">
+        <div><img src="{html_escape(str(visual.get('ride_a_frame', '')))}" alt="Ride A annotated frame" style="width:100%; border-radius:14px; border:1px solid #e2e8f0;" /></div>
+        <div><img src="{html_escape(str(visual.get('ride_b_frame', '')))}" alt="Ride B annotated frame" style="width:100%; border-radius:14px; border:1px solid #e2e8f0;" /></div>
+      </div>
+    </div>
+    {comp_card("Rider Comparison", ["Overall Score", "Rider Score", "Rider Posture", "Rider Balance", "Rider Symmetry", "Rider Stability", "Rider Leg Position"])}
+    {comp_card("Horse Comparison", ["Horse Movement", "Horse Rhythm", "Horse Consistency", "Horse Symmetry", "Horse Topline", "Cadence", "Rock Amplitude", "Drift X"])}
+    {comp_card("Saddle Comparison", ["Saddle Stability", "Saddle Position", "Rider-Saddle Balance", "Withers Clearance", "Bridging Proxy"])}
+    {comp_card("Discipline-Specific Comparison", discipline_metric_names)}
+    <div class="card">
+      <h3 class="section-title">Metric Difference Table</h3>
+      <table>
+        <tr><th>Metric</th><th>Ride A</th><th>Ride B</th><th>Delta</th><th>% Change</th><th>Direction</th><th>Note</th></tr>
+        {''.join(f"<tr><td>{html_escape(str(row.get('metric','')))}</td><td>{row.get('ride_a', 'N/A')}</td><td>{row.get('ride_b', 'N/A')}</td><td>{row.get('delta', 'N/A')}</td><td>{row.get('percent_change', 'N/A')}</td><td>{html_escape(str(row.get('direction', 'No Significant Change')))}</td><td>{html_escape(str(row.get('note', '')))}</td></tr>" for row in comparisons)}
+      </table>
+    </div>
+    <div class="card">
+      <h3 class="section-title">Key Improvements</h3>
+      {_html_list(comparison.get("strengths", []) or [], "No improvements exceeded the significance threshold.")}
+    </div>
+    <div class="card">
+      <h3 class="section-title">Areas That Declined</h3>
+      {_html_list(comparison.get("areas_for_improvement", []) or [], "No metrics declined beyond the threshold.")}
+    </div>
+    <div class="card">
+      <h3 class="section-title">Stable Metrics</h3>
+      {_html_list([row.get("metric", "") for row in comparison.get("stable_metrics", []) or []], "No stable metrics identified.")}
+    </div>
+    <div class="card">
+      <h3 class="section-title">Recommended Next Steps</h3>
+      {_html_list(comparison.get("recommendations", []) or [], "No recommendations available.")}
+    </div>
+    <div class="card">
+      <h3 class="section-title">Discipline Notes</h3>
+      <p class="muted">{html_escape(str(get_discipline_config(comparison.get('discipline', 'general_riding')).get('notes', '')))}</p>
+    </div>
+    """
+
+
 def render_report_html(
     analysis_id: str,
     meta: dict,
@@ -1316,6 +2797,7 @@ def render_report_html(
     growth_svg: str,
     mark_chart_svg: str,
     pdf_available: bool,
+    analysis_payload: Optional[Dict[str, Any]] = None,
     comparison_block: str = "",
     points: Optional[Dict[str, List[float]]] = None,
     mark_scores: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1351,21 +2833,18 @@ def render_report_html(
       <div class="wrap">
         <div class="hero">
           <div>
-            <h1>Saddle Fit Analysis</h1>
-            <p class="muted">Clear snapshot of stability, alignment, rider balance, and gear safety.</p>
+            <h1>Riders Bay SaddleFit<br/>Professional Riding &amp; Saddle Analysis</h1>
+            <p class="muted">Clear snapshot of rider posture, horse movement, saddle stability, discipline context, and gear safety.</p>
           </div>
           <div style="text-align:right;">
             <div class="pill">ID: %%ANALYSIS_ID%%</div>
-            <div class="muted" style="margin-top:4px;">Scheme: %%SCHEME%% | Saddle: %%SADDLE%%</div>
+            <div class="muted" style="margin-top:4px;">Horse: %%HORSE_PROFILE%% | Saddle: %%SADDLE%% | Discipline: %%DISCIPLINE%%</div>
+            <div class="muted" style="margin-top:4px;">Confidence: %%CONFIDENCE%%%</div>
           </div>
         </div>
 
         <div class="summary">
-          <div class="stat"><div class="k">Saddle stability</div><div class="v">%%SADDLE_STABILITY%%</div><div class="muted">%%STABILITY_LABEL%%</div></div>
-          <div class="stat"><div class="k">Rider level</div><div class="v">%%RIDER_LEVEL%%</div><div class="muted">%%RIDER_SCORE%%</div></div>
-          <div class="stat"><div class="k">Fit risk</div><div class="v">%%FIT_RISK%%</div><div class="muted">%%WARNINGS_COUNT%% warning(s)</div></div>
-          <div class="stat"><div class="k">Tracking quality</div><div class="v">%%TRACK_PCT%%%</div><div class="muted">%%TRACK_FRAMES%% frames</div></div>
-          <div class="stat"><div class="k">Gear & safety</div><div class="v">%%GEAR_STATUS%%</div><div class="muted">%%GEAR_USED_TEXT%%</div></div>
+          %%SUMMARY_TILES%%
         </div>
 
         <div class="card">
@@ -1457,6 +2936,8 @@ def render_report_html(
         </div>
 
         %%COMPARISON_BLOCK%%
+
+        %%ANALYSIS_SECTIONS%%
 
         <div class="grid">
           <div class="card">
@@ -1614,6 +3095,13 @@ def render_report_html(
     mark_scores = mark_scores or {}
     series = metrics.get("series", {}) or {}
     series_js = json.dumps(series)
+    if analysis_payload is None:
+        analysis_payload = build_analysis_payload(analysis_id, meta, metrics, scored, points=points, pose_summary=scored.get("pose_summary", {}), mark_scores=mark_scores)
+    summary_cards = analysis_payload.get("summary_cards", {}) or {}
+    analysis_sections_html = analysis_payload.get("analysis_sections_html", "")
+    horse_profile_label = analysis_payload.get("horse_profile_label", meta.get("horse_profile") or meta.get("horse_scheme", ""))
+    discipline_label = analysis_payload.get("discipline_label", meta.get("discipline", "general_riding"))
+    confidence_pct = float(analysis_payload.get("confidence", scored.get("quality", {}).get("analysis_confidence_pct", 0.0)) or 0.0)
     gear_detection = scored.get("gear_detection", {}) or meta.get("gear_detection", {}) or {}
     detected_gear = gear_detection.get("gear", {}) or {}
     gear_conf = gear_detection.get("confidences", {}) or {}
@@ -1656,7 +3144,11 @@ def render_report_html(
     replacements = {
         "ANALYSIS_ID": analysis_id,
         "SCHEME": meta.get("horse_scheme", ""),
+        "HORSE_PROFILE": horse_profile_label,
         "SADDLE": meta.get("saddle_type", ""),
+        "DISCIPLINE": discipline_label,
+        "CONFIDENCE": f"{confidence_pct:.1f}",
+        "SUMMARY_TILES": _score_tiles(summary_cards or scored.get("scores", {})),
         "SADDLE_STABILITY": f"{scored['scores']['saddle_stability']}/100",
         "STABILITY_LABEL": scored['scores']['stability_label'],
         "RIDER_LEVEL": scored['scores']['rider_level'],
@@ -1703,6 +3195,7 @@ def render_report_html(
         "GROWTH_SVG": growth_svg,
         "MARK_CHART_SVG": mark_chart_svg,
         "COMPARISON_BLOCK": comparison_block,
+        "ANALYSIS_SECTIONS": analysis_sections_html,
         "PDF_ITEM": pdf_item,
         "REINITS": int(metrics.get('tracking', {}).get('reinitializations', 0)),
         "GEAR_HINT": "auto-detected" if len(detected_gear) > 0 else "check video clarity",
@@ -1725,6 +3218,7 @@ def render_pdf_report_html(
     metrics: Dict[str, Any],
     scored: Dict,
     mark_scores: Optional[Dict[str, Dict[str, Any]]] = None,
+    analysis_payload: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Rich PDF layout for the downloadable report.
@@ -1774,6 +3268,19 @@ def render_pdf_report_html(
     growth_svg = build_growth_svg(metrics, scored["scores"])
     mark_chart_svg = build_mark_chart(mark_scores)
     trend_svg = build_pdf_trend_svg(series)
+    if analysis_payload is None:
+        analysis_payload = build_analysis_payload(
+            analysis_id,
+            meta,
+            metrics,
+            scored,
+            mark_scores=mark_scores,
+        )
+    summary_tiles_html = _score_tiles(analysis_payload.get("summary_cards", scored.get("scores", {})))
+    analysis_sections_html = analysis_payload.get("analysis_sections_html", "")
+    horse_profile_label = analysis_payload.get("horse_profile_label", meta.get("horse_profile") or meta.get("horse_scheme", ""))
+    discipline_label = analysis_payload.get("discipline_label", meta.get("discipline", "general_riding"))
+    confidence_pct = float(analysis_payload.get("confidence", 0.0) or 0.0)
 
     return f"""
     <html>
@@ -1809,8 +3316,9 @@ def render_pdf_report_html(
       <div class="wrap">
         <div class="flex" style="justify-content: space-between; align-items: baseline;">
           <div>
-            <h1>Saddle Fit Report</h1>
-            <div class="muted">ID: {analysis_id} | Scheme: {meta.get("horse_scheme","")} | Saddle: {meta.get("saddle_type","")}</div>
+            <h1>Riders Bay SaddleFit Report</h1>
+            <div class="muted">ID: {analysis_id} | Profile: {horse_profile_label} | Discipline: {discipline_label} | Saddle: {meta.get("saddle_type","")}</div>
+            <div class="muted">Analysis confidence: {confidence_pct:.1f}%</div>
           </div>
           <div class="pill">Professional Summary</div>
         </div>
@@ -1839,6 +3347,13 @@ def render_pdf_report_html(
             <div class="label">Gear</div>
             <div class="value">{gear_assessment.get("status", "PASS")}</div>
             <div class="muted">{gear_used_summary}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Score Summary</h2>
+          <div class="summary">
+            {summary_tiles_html}
           </div>
         </div>
 
@@ -1958,6 +3473,8 @@ def render_pdf_report_html(
           <p class="muted">Use these in your next session.</p>
           {rec_html}
         </div>
+
+        {analysis_sections_html}
       </div>
     </body>
     </html>
@@ -1977,6 +3494,16 @@ def save_report_assets(
     stick_svg = build_stick_svg(metrics, points)
     growth_svg = build_growth_svg(metrics, scored["scores"])
     mark_chart_svg = build_mark_chart(mark_scores)
+    analysis_payload = scored.get("analysis_payload") or build_analysis_payload(
+        analysis_id,
+        meta,
+        metrics,
+        scored,
+        points=points,
+        pose_summary=scored.get("pose_summary", {}),
+        mark_scores=mark_scores,
+    )
+    scored["analysis_payload"] = analysis_payload
     report_dir = storage.analysis_report_dir(analysis_id)
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1989,6 +3516,7 @@ def save_report_assets(
         growth_svg,
         mark_chart_svg,
         pdf_available=True,  # optimistic for PDF generation run
+        analysis_payload=analysis_payload,
         points=points,
         mark_scores=mark_scores,
     )
@@ -2005,6 +3533,7 @@ def save_report_assets(
         growth_svg,
         mark_chart_svg,
         pdf_available=pdf_generated,
+        analysis_payload=analysis_payload,
         points=points,
         mark_scores=mark_scores,
     )
@@ -2051,6 +3580,7 @@ def render_compare_report(
     scored_a: Dict,
     scored_b: Dict,
     pdf_available: bool,
+    comparison_payload: Optional[Dict[str, Any]] = None,
     show_video: bool = True,
     include_analysis: bool = False,
     mark_scores_a: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -2058,6 +3588,9 @@ def render_compare_report(
 ) -> str:
     mark_scores_a = mark_scores_a or compute_mark_scores(metrics_a, scored_a)
     mark_scores_b = mark_scores_b or compute_mark_scores(metrics_b, scored_b)
+    comparison_payload = comparison_payload or {}
+    comparison_sections_html = comparison_payload.get("comparison_sections_html", "")
+    comparison_summary = comparison_payload.get("overall_summary", "")
 
     def list_html(items, empty_msg: str) -> str:
         if not items:
@@ -2203,10 +3736,12 @@ def render_compare_report(
               <div>
                 <h1 style="margin:0;">Comparison Report</h1>
                 <div class="muted">Side-by-side saddle stability, rider balance, and gear checks.</div>
+                <div class="muted" style="margin-top:4px;">{html_escape(str(comparison_summary))}</div>
               </div>
               <div>
                 <span class="pill">ID: {compare_id}</span>
-                <span class="pill">Scheme: {meta.get("horse_scheme","")}</span>
+                <span class="pill">Profile: {meta.get("horse_profile", meta.get("horse_scheme",""))}</span>
+                <span class="pill">Discipline: {meta.get("discipline","general_riding")}</span>
                 <span class="pill">Saddle: {meta.get("saddle_type","")}</span>
               </div>
             </div>
@@ -2225,6 +3760,8 @@ def render_compare_report(
               <div class="section-title">Side-by-side metrics</div>
               {comparison_table}
             </div>
+
+            {comparison_sections_html}
           </div>
         </body>
         </html>
@@ -2314,11 +3851,12 @@ def render_compare_report(
       </style>
     </head>
     <body>
-      <div class="wrap">
+        <div class="wrap">
         <h2 style="margin:0;">Video Comparison Report</h2>
         <div style="margin-top:8px;">
           <span class="pill">ID: {compare_id}</span>
-          <span class="pill">Scheme: {meta.get("horse_scheme","")}</span>
+          <span class="pill">Profile: {meta.get("horse_profile", meta.get("horse_scheme",""))}</span>
+          <span class="pill">Discipline: {meta.get("discipline","general_riding")}</span>
           <span class="pill">Saddle: {meta.get("saddle_type","")}</span>
         </div>
 
@@ -2342,6 +3880,8 @@ def render_compare_report(
         </div>
 
         {comparison_block}
+
+        {comparison_sections_html}
 
         <div class="card">
           <h3>Visual Aids</h3>
@@ -2385,12 +3925,16 @@ def save_compare_report(
     metrics_b: Dict[str, float],
     scored_a: Dict,
     scored_b: Dict,
+    comparison_payload: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
     storage.ensure_runtime_directories()
     mark_scores_a = compute_mark_scores(metrics_a, scored_a)
     mark_scores_b = compute_mark_scores(metrics_b, scored_b)
     report_dir = storage.comparison_report_dir(compare_id)
     report_dir.mkdir(parents=True, exist_ok=True)
+
+    if comparison_payload is None:
+        comparison_payload = build_comparison_payload(compare_id, meta, label_a, label_b, scored_a.get("analysis_payload", {}), scored_b.get("analysis_payload", {}))
 
     pdf_html = render_compare_report(
         compare_id,
@@ -2402,6 +3946,7 @@ def save_compare_report(
         scored_a,
         scored_b,
         pdf_available=True,
+        comparison_payload=comparison_payload,
         show_video=False,
         include_analysis=True,
         mark_scores_a=mark_scores_a,
@@ -2452,6 +3997,7 @@ def save_compare_report(
         scored_a,
         scored_b,
         pdf_available=pdf_generated,
+        comparison_payload=comparison_payload,
         show_video=True,
         include_analysis=False,
         mark_scores_a=mark_scores_a,
@@ -2493,30 +4039,40 @@ def analyze_video_auto(run_dir: str, analysis_id: str, meta: dict) -> Tuple[dict
     tracks, tstats = track_points_lk(frames, points)
     metrics = compute_metrics(tracks, times, tstats)
     gear_assessment = evaluate_gear(merged_gear, metrics, meta["horse_scheme"])
-    scored = score_and_recommend(metrics, meta["horse_scheme"], meta["saddle_type"])
+    pose_summary = sample_rider_pose_metrics(frames, times, points)
+    scored = score_and_recommend(
+        metrics,
+        meta.get("horse_profile", meta.get("horse_scheme", "high_wither")),
+        meta["saddle_type"],
+        meta.get("discipline", "general_riding"),
+        pose_summary,
+    )
     scored["gear_assessment"] = gear_assessment
     scored["gear_detection"] = detection_data
     scored["gear_used"] = merged_gear
+    scored["pose_summary"] = pose_summary
     mark_scores = compute_mark_scores(metrics, scored)
 
-    result = {
-        "analysis_id": analysis_id,
-        "horse_scheme": meta["horse_scheme"],
-        "saddle_type": meta["saddle_type"],
-        "gear": meta.get("gear", {}),
-        "gear_detected": detection_data,
-        "gear_detection": detection_data,
-        "gear_used": merged_gear,
-        "video_filename": meta["video_filename"],
-        "metrics": metrics,
-        "scores": scored["scores"],
-        "flags": scored["flags"],
-        "recommendations": scored["recommendations"],
-        "calibration_points": points,
-        "auto_detect_confidence": auto["confidence"],
-        "gear_assessment": gear_assessment,
-        "marks": mark_scores,
-    }
+    result = build_analysis_payload(
+        analysis_id,
+        meta,
+        metrics,
+        scored,
+        points=points,
+        pose_summary=pose_summary,
+        mark_scores=mark_scores,
+    )
+    result["gear"] = meta.get("gear", {})
+    result["gear_detected"] = detection_data
+    result["gear_detection"] = detection_data
+    result["gear_used"] = merged_gear
+    result["auto_detect_confidence"] = auto["confidence"]
+    result["gear_assessment"] = gear_assessment
+    result["marks"] = mark_scores
+    result["calibration_points"] = points
+    result["horse_scheme"] = meta.get("horse_scheme", meta.get("horse_profile", "high_wither"))
+    result["video_filename"] = meta["video_filename"]
+    scored["analysis_payload"] = result
 
     with open(run_dir_path / "result.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -2724,6 +4280,31 @@ def dashboard():
           background: rgba(255,255,255,0.10); color: #e5e7eb; font-weight: 700;
         }}
         .scheme-btn {{ padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: #ffffff; color: var(--fg); font-weight: 700; cursor: pointer; }}
+        .quick-grid {{ display:grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin-top: 8px; }}
+        .quick-group {{ margin-top: 8px; }}
+        .quick-label {{ font-size: 12px; font-weight: 800; color: #cbd5e1; letter-spacing: 0.03em; text-transform: uppercase; }}
+        .progress-overlay {{
+          display:none; position: fixed; inset: 0; z-index: 50; background: rgba(2, 6, 23, 0.78);
+          backdrop-filter: blur(10px); align-items:center; justify-content:center; padding: 18px;
+        }}
+        .progress-card {{
+          width: min(760px, 100%); background: linear-gradient(145deg, #08111f, #0f172a);
+          color: #e5e7eb; border-radius: 22px; border: 1px solid rgba(255,255,255,0.10);
+          box-shadow: 0 24px 60px rgba(0,0,0,0.45); padding: 20px;
+        }}
+        .progress-head {{ display:flex; justify-content: space-between; gap: 12px; align-items:flex-start; flex-wrap: wrap; }}
+        .progress-title {{ font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }}
+        .progress-subtitle {{ color: #cbd5e1; margin-top: 4px; line-height: 1.5; }}
+        .progress-bar {{ margin-top: 16px; height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow:hidden; }}
+        .progress-fill {{ width: 0%; height: 100%; border-radius: 999px; background: linear-gradient(135deg, #5be286, #2dd4bf); transition: width 0.35s ease; }}
+        .progress-steps {{ display:grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 16px; }}
+        .progress-step {{
+          padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+          color: #cbd5e1; min-height: 72px;
+        }}
+        .progress-step.active {{ color: #ecfeff; border-color: rgba(45,212,191,0.40); box-shadow: inset 0 0 0 1px rgba(45,212,191,0.18); }}
+        .progress-step b {{ display:block; color: inherit; margin-bottom: 4px; }}
+        .progress-note {{ margin-top: 14px; color: #94a3b8; font-size: 13px; }}
         .modal {{
           display:none; position: fixed; inset:0; background: rgba(0,0,0,0.55); align-items:center; justify-content:center; z-index: 20; padding: 18px;
         }}
@@ -2760,7 +4341,8 @@ def dashboard():
             <a href="#compare">Compare</a>
           </div>
           <div class="nav-cta">
-            <button class="ghost" type="button" onclick="openSchemeGuide()">Scheme guide</button>
+            <button class="ghost" type="button" onclick="openHorseGuide()">Horse guide</button>
+            <button class="ghost" type="button" onclick="openDisciplineGuide()">Discipline guide</button>
             <a class="btn" href="#start">Launch analysis</a>
           </div>
         </div>
@@ -2785,25 +4367,42 @@ def dashboard():
           </div>
           <div class="start-card">
             <h3 style="margin:0;">Start analysis</h3>
-            <p class="hint" style="margin-top:4px;">Designed for quick uploads and clean rider/horse metrics—no extra fluff.</p>
+            <p class="hint" style="margin-top:4px;">Designed for quick uploads and clean rider/horse metrics without unnecessary clutter.</p>
             <form id="uploadForm" action="/start" method="post" enctype="multipart/form-data">
               <label>Video (MP4 / MOV)</label>
               <input type="file" name="video" accept="video/*" required />
 
               <div class="input-row">
                 <div>
-                  <label>Horse type / discipline</label>
-                  <select name="horse_scheme">
-                    {schemes_select_html("high_wither")}
+                  <label>Horse profile</label>
+                  <select name="horse_profile" id="horseProfileSelect">
+                    {horse_profile_select_html("high_wither")}
                   </select>
+                  <input type="hidden" name="horse_scheme" id="horseScheme" value="high_wither" />
                   <div class="hint">
-                    <button type="button" class="mini-btn" onclick="openSchemeGuide()">Scheme guide</button>
+                    <button type="button" class="mini-btn" onclick="openHorseGuide()">Profile guide</button>
                     <span style="margin-left:6px;">Quick set:</span>
                     <div class="scheme-buttons">
-                      <button type="button" class="mini-btn" onclick="quickScheme('trail')">Trail</button>
-                      <button type="button" class="mini-btn" onclick="quickScheme('dressage')">Arena</button>
-                      <button type="button" class="mini-btn" onclick="quickScheme('racing')">Speed</button>
-                      <button type="button" class="mini-btn" onclick="quickScheme('show_jumping')">Jumping</button>
+                      <button type="button" class="mini-btn" onclick="quickProfile('high_wither')">High wither</button>
+                      <button type="button" class="mini-btn" onclick="quickProfile('round_barrel')">Round barrel</button>
+                      <button type="button" class="mini-btn" onclick="quickProfile('wide_build')">Wide build</button>
+                      <button type="button" class="mini-btn" onclick="quickProfile('short_back')">Short back</button>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label>Discipline</label>
+                  <select name="discipline" id="disciplineSelect">
+                    {discipline_select_html("general_riding")}
+                  </select>
+                  <div class="hint">
+                    <button type="button" class="mini-btn" onclick="openDisciplineGuide()">Discipline guide</button>
+                    <span style="margin-left:6px;">Quick set:</span>
+                    <div class="scheme-buttons">
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('general_riding')">General</button>
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('trail_riding')">Trail</button>
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('dressage')">Dressage</button>
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('show_jumping')">Jumping</button>
                     </div>
                   </div>
                 </div>
@@ -2837,7 +4436,7 @@ def dashboard():
               <p class="muted">Drop two side-view clips to see progress with the same overlay, scores, and PDF export.</p>
               <div class="hero-tags" style="margin-top:12px;">
                 <span class="tag">Dual video ingest</span>
-                <span class="tag">Shared scheme</span>
+                <span class="tag">Shared profile + discipline</span>
                 <span class="tag">Progress callouts</span>
               </div>
             </div>
@@ -2849,10 +4448,33 @@ def dashboard():
 
               <div class="input-row">
                 <div>
-                  <label>Horse scheme / discipline</label>
-                  <select name="horse_scheme_compare">
-                    {schemes_select_html("high_wither")}
+                  <label>Horse profile</label>
+                  <select name="horse_profile_compare" id="horseProfileCompare">
+                    {horse_profile_select_html("high_wither")}
                   </select>
+                  <input type="hidden" name="horse_scheme_compare" id="horseSchemeCompare" value="high_wither" />
+                  <div class="hint">
+                    <button type="button" class="mini-btn" onclick="openHorseGuide()">Profile guide</button>
+                    <div class="scheme-buttons">
+                      <button type="button" class="mini-btn" onclick="quickProfile('high_wither', true)">High wither</button>
+                      <button type="button" class="mini-btn" onclick="quickProfile('round_barrel', true)">Round barrel</button>
+                      <button type="button" class="mini-btn" onclick="quickProfile('wide_build', true)">Wide build</button>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label>Discipline</label>
+                  <select name="discipline_compare" id="disciplineCompare">
+                    {discipline_select_html("general_riding")}
+                  </select>
+                  <div class="hint">
+                    <button type="button" class="mini-btn" onclick="openDisciplineGuide()">Discipline guide</button>
+                    <div class="scheme-buttons">
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('general_riding', true)">General</button>
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('trail_riding', true)">Trail</button>
+                      <button type="button" class="mini-btn" onclick="quickDiscipline('show_jumping', true)">Jumping</button>
+                    </div>
+                  </div>
                 </div>
                 <div>
                   <label>Saddle type</label>
@@ -2869,6 +4491,21 @@ def dashboard():
           </div>
         </section>
       </main>
+
+      <div id="progressOverlay" class="progress-overlay" aria-hidden="true">
+        <div class="progress-card" role="status" aria-live="polite">
+          <div class="progress-head">
+            <div>
+              <div class="progress-title" id="progressTitle">Uploading video</div>
+              <div class="progress-subtitle" id="progressSubtitle">Preparing the ride for rider, horse, and saddle analysis.</div>
+            </div>
+            <div class="scheme-pill" id="progressPercent">0%</div>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <div class="progress-steps" id="progressSteps"></div>
+          <div class="progress-note">Keep this tab open while the analysis runs.</div>
+        </div>
+      </div>
 
       <div id="schemeModal" class="modal">
         <div class="modal-card">
@@ -2896,140 +4533,671 @@ def dashboard():
       </div>
 
       <script>
-        function openSchemeGuide() {{
-          const modal = document.getElementById("schemeModal");
-          if (modal) modal.style.display = "flex";
+        const progressFlow = [
+          {{ title: "Uploading Video", subtitle: "Transferring the ride and validating the clip." }},
+          {{ title: "Processing Video", subtitle: "Extracting frames and preparing the analysis." }},
+          {{ title: "Detecting Rider/Horse", subtitle: "Locating rider posture and horse reference points." }},
+          {{ title: "Tracking Movement", subtitle: "Following motion through the ride." }},
+          {{ title: "Calculating Metrics", subtitle: "Measuring posture, balance, symmetry, and stability." }},
+          {{ title: "Generating Analysis", subtitle: "Scoring the ride against the selected discipline." }},
+          {{ title: "Preparing Report", subtitle: "Building the HTML and PDF report package." }},
+          {{ title: "Analysis Complete", subtitle: "Final results are loading now." }},
+        ];
+        let progressTimer = null;
+
+        function openHorseGuide() {{
+          window.open("/horse-scheme-guide", "_blank", "noopener");
         }}
+
+        function openDisciplineGuide() {{
+          window.open("/discipline-guide", "_blank", "noopener");
+        }}
+
+        function openSchemeGuide() {{
+          openHorseGuide();
+        }}
+
         function closeSchemeGuide() {{
           const modal = document.getElementById("schemeModal");
           if (modal) modal.style.display = "none";
         }}
-        function quickScheme(val) {{
-          const selMain = document.querySelector("select[name='horse_scheme']");
-          const selCompare = document.querySelector("select[name='horse_scheme_compare']");
-          if (selMain) selMain.value = val;
-          if (selCompare) selCompare.value = val;
+
+        function syncLegacySelection(isCompare) {{
+          const profileSelect = document.getElementById(isCompare ? "horseProfileCompare" : "horseProfileSelect");
+          const disciplineSelect = document.getElementById(isCompare ? "disciplineCompare" : "disciplineSelect");
+          const hiddenScheme = document.getElementById(isCompare ? "horseSchemeCompare" : "horseScheme");
+          if (profileSelect && hiddenScheme) hiddenScheme.value = profileSelect.value || "high_wither";
+          if (disciplineSelect && !disciplineSelect.value) disciplineSelect.value = "general_riding";
         }}
+
+        function quickProfile(val, isCompare) {{
+          const select = document.getElementById(isCompare ? "horseProfileCompare" : "horseProfileSelect");
+          if (select) select.value = val;
+          syncLegacySelection(!!isCompare);
+        }}
+
+        function quickDiscipline(val, isCompare) {{
+          const select = document.getElementById(isCompare ? "disciplineCompare" : "disciplineSelect");
+          if (select) select.value = val;
+          syncLegacySelection(!!isCompare);
+        }}
+
+        function quickScheme(val) {{
+          const alias = {{
+            trail: "trail_riding",
+            dressage: "dressage",
+            racing: "racing_gallop",
+            show_jumping: "show_jumping"
+          }};
+          const mapped = alias[val] || val;
+          quickDiscipline(mapped, false);
+          quickDiscipline(mapped, true);
+        }}
+
+        function showProgressOverlay(kind) {{
+          const overlay = document.getElementById("progressOverlay");
+          const stepsNode = document.getElementById("progressSteps");
+          const titleNode = document.getElementById("progressTitle");
+          const subtitleNode = document.getElementById("progressSubtitle");
+          const percentNode = document.getElementById("progressPercent");
+          const fillNode = document.getElementById("progressFill");
+          if (!overlay || !stepsNode || !titleNode || !subtitleNode || !percentNode || !fillNode) return;
+
+          const steps = progressFlow;
+          stepsNode.innerHTML = steps.map((step, index) => `
+            <div class="progress-step${{index === 0 ? " active" : ""}}" data-progress-step="${{index}}">
+              <b>${{step.title}}</b>
+              <div>${{step.subtitle}}</div>
+            </div>
+          `).join("");
+
+          overlay.style.display = "flex";
+          document.body.style.overflow = "hidden";
+
+          let index = 0;
+          const render = () => {{
+            const current = steps[index];
+            titleNode.textContent = current.title;
+            subtitleNode.textContent = current.subtitle + (kind === "comparison" ? " Comparing both rides." : "");
+            const pct = Math.round((index / Math.max(steps.length - 1, 1)) * 100);
+            percentNode.textContent = pct + "%";
+            fillNode.style.width = pct + "%";
+            const cards = stepsNode.querySelectorAll(".progress-step");
+            cards.forEach((card, i) => {{
+              card.classList.toggle("active", i === index);
+            }});
+          }};
+
+          render();
+          if (progressTimer) clearInterval(progressTimer);
+          progressTimer = window.setInterval(() => {{
+            if (index < steps.length - 1) {{
+              index += 1;
+              render();
+            }} else {{
+              clearInterval(progressTimer);
+              progressTimer = null;
+            }}
+          }}, 900);
+        }}
+
+        function prepareForm(formId, isCompare) {{
+          const form = document.getElementById(formId);
+          if (!form) return;
+          form.addEventListener("submit", (event) => {{
+            event.preventDefault();
+            syncLegacySelection(!!isCompare);
+            showProgressOverlay(isCompare ? "comparison" : "analysis");
+            window.setTimeout(() => form.submit(), 150);
+          }});
+        }}
+
+        document.addEventListener("DOMContentLoaded", () => {{
+          syncLegacySelection(false);
+          syncLegacySelection(true);
+          prepareForm("uploadForm", false);
+          prepareForm("compareForm", true);
+
+          const profileMain = document.getElementById("horseProfileSelect");
+          const disciplineMain = document.getElementById("disciplineSelect");
+          const profileCompare = document.getElementById("horseProfileCompare");
+          const disciplineCompare = document.getElementById("disciplineCompare");
+
+          [profileMain, disciplineMain, profileCompare, disciplineCompare].forEach((node) => {{
+            if (!node) return;
+            node.addEventListener("change", () => syncLegacySelection(node.id.includes("Compare")));
+          }});
+        }});
       </script>
     </body>
     </html>
     """
 
 
+def _validate_model(model_cls, payload):
+    if hasattr(model_cls, "model_validate"):
+        return model_cls.model_validate(payload)  # type: ignore[attr-defined]
+    return model_cls.parse_obj(payload)  # type: ignore[attr-defined]
+
+
+def _analysis_scored_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "scores": dict(payload.get("scores", {}) or {}),
+        "flags": list(payload.get("flags", []) or []),
+        "recommendations": list(payload.get("recommendations", []) or []),
+        "coach": dict(payload.get("coach", {}) or {}),
+        "gear_assessment": dict(payload.get("gear_assessment", {}) or {}),
+        "gear_detection": dict(payload.get("gear_detection", {}) or {}),
+        "gear_used": dict(payload.get("gear_used", {}) or {}),
+        "quality": dict(payload.get("quality", {}) or {}),
+        "pose_summary": dict(payload.get("pose_summary", {}) or {}),
+        "analysis_payload": payload,
+    }
+
+
+def _analysis_meta_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    video_meta = payload.get("video_metadata", {}) or {}
+    horse_profile = payload.get("horse_profile", payload.get("horse_scheme", "high_wither"))
+    discipline = payload.get("discipline", "general_riding")
+    saddle_type = payload.get("saddle_type", "english")
+    return {
+        "analysis_id": payload.get("analysis_id", ""),
+        "video_filename": video_meta.get("filename", ""),
+        "horse_scheme": horse_profile,
+        "horse_profile": horse_profile,
+        "discipline": discipline,
+        "saddle_type": saddle_type,
+        "frame_width": video_meta.get("width"),
+        "frame_height": video_meta.get("height"),
+    }
+
+
+def _comparison_scored_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return _analysis_scored_from_payload(payload)
+
+
+def load_analysis_record(analysis_id: str) -> Optional[Dict[str, Any]]:
+    run_dir = storage.analysis_output_dir(analysis_id)
+    legacy_run_dir = LEGACY_OUTPUTS_DIR / analysis_id
+    meta_path = first_existing_path(run_dir / "meta.json", legacy_run_dir / "meta.json")
+    result_path = first_existing_path(run_dir / "result.json", legacy_run_dir / "result.json")
+    report_path = first_existing_path(
+        storage.analysis_report_dir(analysis_id) / "report.html",
+        run_dir / "report.html",
+        legacy_run_dir / "report.html",
+    )
+    if result_path is None:
+        return None
+
+    meta: Dict[str, Any] = {}
+    if meta_path is not None:
+        with open(meta_path, "r", encoding="utf-8") as handle:
+            meta = json.load(handle)
+    with open(result_path, "r", encoding="utf-8") as handle:
+        result = json.load(handle)
+
+    payload = result if isinstance(result, dict) and "rider_metrics" in result else None
+    if payload is None:
+        payload = build_analysis_payload(
+            analysis_id,
+            meta,
+            result.get("metrics", {}) or {},
+            _analysis_scored_from_payload(result),
+            points=result.get("calibration_points", result.get("points", {})) or {},
+            pose_summary=result.get("pose_summary", {}) or {},
+            mark_scores=result.get("marks", {}) or result.get("mark_scores", {}) or {},
+            created_at=result.get("created_at"),
+        )
+    payload = dict(payload)
+    payload.setdefault("analysis_id", analysis_id)
+    payload.setdefault("metrics", result.get("metrics", {}) or {})
+    payload.setdefault("mark_scores", result.get("marks", {}) or result.get("mark_scores", {}) or {})
+    payload.setdefault("calibration_points", result.get("calibration_points", result.get("points", {})) or {})
+    payload.setdefault("points", payload.get("calibration_points", {}))
+    payload.setdefault("pose_summary", result.get("pose_summary", {}) or {})
+    payload.setdefault("analysis_sections_html", payload.get("analysis_sections_html", "") or build_analysis_sections_html(payload))
+
+    record = {
+        "analysis_id": analysis_id,
+        "meta": meta or _analysis_meta_from_payload(payload),
+        "result": result,
+        "analysis_payload": payload,
+        "scored": _analysis_scored_from_payload(payload),
+        "mark_scores": payload.get("mark_scores", {}) or result.get("marks", {}) or {},
+        "report_html": report_path.read_text(encoding="utf-8") if report_path is not None else "",
+    }
+    return record
+
+
+def _comparison_meta_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    horse_profile = payload.get("horse_profile", "high_wither")
+    discipline = payload.get("discipline", "general_riding")
+    saddle_type = payload.get("saddle_type", "english")
+    return {
+        "horse_scheme": horse_profile,
+        "horse_profile": horse_profile,
+        "discipline": discipline,
+        "saddle_type": saddle_type,
+    }
+
+
+def load_comparison_record(compare_id: str) -> Optional[Dict[str, Any]]:
+    compare_path = first_existing_path(
+        storage.comparison_output_dir(compare_id) / "compare.json",
+        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "compare.json",
+    )
+    compare_data: Dict[str, Any] = {}
+    if compare_path is not None:
+        with open(compare_path, "r", encoding="utf-8") as handle:
+            compare_data = json.load(handle)
+
+    label_a = compare_data.get("label_a") or compare_data.get("video_a", {}).get("file") or "Ride A"
+    label_b = compare_data.get("label_b") or compare_data.get("video_b", {}).get("file") or "Ride B"
+
+    analysis_a = compare_data.get("analysis_a")
+    analysis_b = compare_data.get("analysis_b")
+    if not isinstance(analysis_a, dict):
+        record_a = load_analysis_record(f"{compare_id}_a")
+        analysis_a = record_a["analysis_payload"] if record_a is not None else None
+    if not isinstance(analysis_b, dict):
+        record_b = load_analysis_record(f"{compare_id}_b")
+        analysis_b = record_b["analysis_payload"] if record_b is not None else None
+    if not isinstance(analysis_a, dict) or not isinstance(analysis_b, dict):
+        return None
+
+    comparison_payload = compare_data.get("comparison_payload")
+    meta = _comparison_meta_from_payload(comparison_payload or compare_data)
+    if isinstance(analysis_a, dict):
+        meta["horse_profile"] = analysis_a.get("horse_profile", meta["horse_profile"])
+        meta["horse_scheme"] = meta["horse_profile"]
+        meta["discipline"] = analysis_a.get("discipline", meta["discipline"])
+        meta["saddle_type"] = analysis_a.get("saddle_type", meta["saddle_type"])
+    elif isinstance(analysis_b, dict):
+        meta["horse_profile"] = analysis_b.get("horse_profile", meta["horse_profile"])
+        meta["horse_scheme"] = meta["horse_profile"]
+        meta["discipline"] = analysis_b.get("discipline", meta["discipline"])
+        meta["saddle_type"] = analysis_b.get("saddle_type", meta["saddle_type"])
+    if not isinstance(comparison_payload, dict) or not comparison_payload.get("comparisons"):
+        comparison_payload = build_comparison_payload(compare_id, meta, label_a, label_b, analysis_a, analysis_b)
+    comparison_payload = dict(comparison_payload)
+    comparison_payload.setdefault("comparison_id", compare_id)
+    comparison_payload.setdefault("created_at", compare_data.get("created_at", datetime.now(timezone.utc).isoformat()))
+
+    record = {
+        "compare_id": compare_id,
+        "meta": meta,
+        "label_a": label_a,
+        "label_b": label_b,
+        "comparison_payload": comparison_payload,
+        "analysis_a": analysis_a,
+        "analysis_b": analysis_b,
+        "metrics_a": analysis_a.get("metrics", {}) or {},
+        "metrics_b": analysis_b.get("metrics", {}) or {},
+        "scored_a": _comparison_scored_from_payload(analysis_a),
+        "scored_b": _comparison_scored_from_payload(analysis_b),
+        "mark_scores_a": analysis_a.get("mark_scores", {}) or analysis_a.get("marks", {}) or {},
+        "mark_scores_b": analysis_b.get("mark_scores", {}) or analysis_b.get("marks", {}) or {},
+        "report_html": "",
+        "compare_data": compare_data,
+    }
+    report_path = first_existing_path(
+        storage.comparison_report_dir(compare_id) / "report.html",
+        storage.comparison_output_dir(compare_id) / "report.html",
+        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "report.html",
+    )
+    if report_path is not None:
+        record["report_html"] = report_path.read_text(encoding="utf-8")
+    return record
+
+
+def render_analysis_report_from_record(record: Dict[str, Any], pdf_available: bool = True) -> str:
+    payload = record["analysis_payload"]
+    meta = record.get("meta") or _analysis_meta_from_payload(payload)
+    metrics = payload.get("metrics", {}) or record.get("result", {}).get("metrics", {}) or {}
+    scored = record.get("scored") or _analysis_scored_from_payload(payload)
+    points = payload.get("points", {}) or payload.get("calibration_points", {}) or {}
+    mark_scores = record.get("mark_scores") or payload.get("mark_scores", {}) or record.get("result", {}).get("marks", {}) or {}
+    stick_svg = build_stick_svg(metrics, points)
+    growth_svg = build_growth_svg(metrics, scored.get("scores", {}))
+    mark_chart_svg = build_mark_chart(mark_scores)
+    return render_report_html(
+        payload.get("analysis_id", record.get("analysis_id", "")),
+        meta,
+        metrics,
+        scored,
+        stick_svg,
+        growth_svg,
+        mark_chart_svg,
+        pdf_available=pdf_available,
+        analysis_payload=payload,
+        points=points,
+        mark_scores=mark_scores,
+    )
+
+
+def render_comparison_report_from_record(
+    record: Dict[str, Any],
+    pdf_available: bool = True,
+    show_video: bool = True,
+    include_analysis: bool = False,
+) -> str:
+    comparison_payload = record["comparison_payload"]
+    compare_id = record.get("compare_id", comparison_payload.get("comparison_id", ""))
+    meta = record.get("meta") or _comparison_meta_from_payload(comparison_payload)
+    return render_compare_report(
+        compare_id,
+        meta,
+        record.get("label_a", "Ride A"),
+        record.get("label_b", "Ride B"),
+        record.get("metrics_a", {}) or {},
+        record.get("metrics_b", {}) or {},
+        record.get("scored_a") or _comparison_scored_from_payload(record["analysis_a"]),
+        record.get("scored_b") or _comparison_scored_from_payload(record["analysis_b"]),
+        pdf_available=pdf_available,
+        comparison_payload=comparison_payload,
+        show_video=show_video,
+        include_analysis=include_analysis,
+        mark_scores_a=record.get("mark_scores_a") or {},
+        mark_scores_b=record.get("mark_scores_b") or {},
+    )
+
+
+async def process_single_analysis_upload(
+    video: UploadFile,
+    horse_profile: str,
+    discipline: str,
+    horse_scheme: str,
+    saddle_type: str,
+) -> Dict[str, Any]:
+    storage.ensure_runtime_directories()
+    analysis_id = str(uuid.uuid4())
+    run_dir = storage.analysis_output_dir(analysis_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = os.path.basename(video.filename or "") or "uploaded_video.mp4"
+    video_path = run_dir / filename
+    with open(video_path, "wb") as handle:
+        handle.write(await video.read())
+
+    frame_path = run_dir / "frame0.png"
+    w, h = extract_first_frame(video_path, frame_path)
+    profile_key, discipline_key = split_legacy_scheme(horse_scheme)
+    horse_profile_key = normalize_horse_profile(horse_profile or profile_key or horse_scheme)
+    discipline_key = normalize_discipline(discipline or discipline_key)
+    meta = {
+        "analysis_id": analysis_id,
+        "video_filename": filename,
+        "horse_scheme": horse_profile_key,
+        "horse_profile": horse_profile_key,
+        "discipline": discipline_key,
+        "saddle_type": saddle_type,
+        "gear": {},
+        "gear_detection": {},
+        "gear_used": {},
+        "frame_width": w,
+        "frame_height": h,
+    }
+    with open(run_dir / "meta.json", "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, indent=2)
+
+    result, metrics, scored, confidence = analyze_video_auto(run_dir, analysis_id, meta)
+    points = result.get("calibration_points", {}) or {}
+    pdf_generated, final_html = save_report_assets(run_dir, analysis_id, meta, metrics, scored, points)
+    record = load_analysis_record(analysis_id) or {}
+    record.update(
+        {
+            "analysis_id": analysis_id,
+            "run_dir": os.fspath(run_dir),
+            "meta": meta,
+            "result": result,
+            "analysis_payload": result,
+            "scored": scored,
+            "mark_scores": result.get("mark_scores", result.get("marks", {})) or {},
+            "report_html": final_html,
+            "pdf_generated": pdf_generated,
+            "confidence": confidence,
+        }
+    )
+    return record
+
+
+async def process_comparison_uploads(
+    video_a: UploadFile,
+    video_b: UploadFile,
+    horse_profile: str,
+    discipline: str,
+    horse_scheme: str,
+    saddle_type: str,
+) -> Dict[str, Any]:
+    storage.ensure_runtime_directories()
+    compare_id = str(uuid.uuid4())
+    base_dir = storage.comparison_output_dir(compare_id)
+    run_a = storage.comparison_case_dir(compare_id, "a")
+    run_b = storage.comparison_case_dir(compare_id, "b")
+    run_a.mkdir(parents=True, exist_ok=True)
+    run_b.mkdir(parents=True, exist_ok=True)
+
+    fname_a = os.path.basename(video_a.filename or "") or "video_a.mp4"
+    fname_b = os.path.basename(video_b.filename or "") or "video_b.mp4"
+    path_a = run_a / fname_a
+    path_b = run_b / fname_b
+    with open(path_a, "wb") as handle:
+        handle.write(await video_a.read())
+    with open(path_b, "wb") as handle:
+        handle.write(await video_b.read())
+
+    wa, ha = extract_first_frame(path_a, run_a / "frame0.png")
+    wb, hb = extract_first_frame(path_b, run_b / "frame0.png")
+
+    profile_key, discipline_key = split_legacy_scheme(horse_scheme)
+    horse_profile_key = normalize_horse_profile(horse_profile or profile_key or horse_scheme)
+    discipline_key = normalize_discipline(discipline or discipline_key)
+    meta_base = {
+        "horse_scheme": horse_profile_key,
+        "horse_profile": horse_profile_key,
+        "discipline": discipline_key,
+        "saddle_type": saddle_type,
+    }
+    meta_a = {**meta_base, "analysis_id": compare_id + "_a", "video_filename": fname_a, "frame_width": wa, "frame_height": ha}
+    meta_b = {**meta_base, "analysis_id": compare_id + "_b", "video_filename": fname_b, "frame_width": wb, "frame_height": hb}
+
+    result_a, metrics_a, scored_a, conf_a = analyze_video_auto(run_a, meta_a["analysis_id"], meta_a)
+    result_b, metrics_b, scored_b, conf_b = analyze_video_auto(run_b, meta_b["analysis_id"], meta_b)
+
+    compare_meta = {"horse_scheme": horse_profile_key, "horse_profile": horse_profile_key, "discipline": discipline_key, "saddle_type": saddle_type}
+    comparison_payload = build_comparison_payload(compare_id, compare_meta, fname_a, fname_b, result_a, result_b)
+    pdf_generated, final_html = save_compare_report(
+        base_dir,
+        compare_id,
+        compare_meta,
+        fname_a,
+        fname_b,
+        metrics_a,
+        metrics_b,
+        scored_a,
+        scored_b,
+        comparison_payload=comparison_payload,
+    )
+
+    compare_json = {
+        "compare_id": compare_id,
+        "created_at": comparison_payload.get("created_at"),
+        "label_a": fname_a,
+        "label_b": fname_b,
+        "comparison_payload": comparison_payload,
+        "analysis_a": result_a,
+        "analysis_b": result_b,
+        "video_a": {"file": fname_a, "confidence": conf_a, "metrics": metrics_a, "scores": scored_a["scores"]},
+        "video_b": {"file": fname_b, "confidence": conf_b, "metrics": metrics_b, "scores": scored_b["scores"]},
+    }
+    with open(base_dir / "compare.json", "w", encoding="utf-8") as handle:
+        json.dump(compare_json, handle, indent=2)
+
+    record = load_comparison_record(compare_id) or {}
+    record.update(
+        {
+            "compare_id": compare_id,
+            "base_dir": os.fspath(base_dir),
+            "meta": compare_meta,
+            "label_a": fname_a,
+            "label_b": fname_b,
+            "comparison_payload": comparison_payload,
+            "analysis_a": result_a,
+            "analysis_b": result_b,
+            "metrics_a": metrics_a,
+            "metrics_b": metrics_b,
+            "scored_a": scored_a,
+            "scored_b": scored_b,
+            "mark_scores_a": compute_mark_scores(metrics_a, scored_a),
+            "mark_scores_b": compute_mark_scores(metrics_b, scored_b),
+            "report_html": final_html,
+            "pdf_generated": pdf_generated,
+            "compare_json": compare_json,
+        }
+    )
+    return record
+
+
 if MULTIPART_AVAILABLE:
     @app.post("/start", response_class=HTMLResponse)
     async def start(
         video: UploadFile = File(...),
-        horse_scheme: str = Form("high_wither"),
+        horse_profile: str = Form("high_wither"),
+        discipline: str = Form("general_riding"),
+        horse_scheme: str = Form(""),
         saddle_type: str = Form("english"),
     ):
         if video is None or not video.filename:
             return HTMLResponse("<h3>No video uploaded.</h3>", status_code=400)
-
-        storage.ensure_runtime_directories()
-        analysis_id = str(uuid.uuid4())
-        run_dir = storage.analysis_output_dir(analysis_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        filename = os.path.basename(video.filename) or "uploaded_video.mp4"
-        video_path = run_dir / filename
-        with open(video_path, "wb") as f:
-            f.write(await video.read())
-
-        frame_path = run_dir / "frame0.png"
-        w, h = extract_first_frame(video_path, frame_path)
-
-        meta = {
-            "analysis_id": analysis_id,
-            "video_filename": filename,
-            "horse_scheme": horse_scheme,
-            "saddle_type": saddle_type,
-            "gear": {},
-            "gear_detection": {},
-            "gear_used": {},
-            "frame_width": w,
-            "frame_height": h,
-        }
-        with open(run_dir / "meta.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
-
         try:
-            result, metrics, scored, confidence = analyze_video_auto(run_dir, analysis_id, meta)
+            record = await process_single_analysis_upload(video, horse_profile, discipline, horse_scheme, saddle_type)
         except Exception as exc:
-            # If auto fails, allow manual calibration instead of blocking upload
             return HTMLResponse(f"""
             <html><body style="font-family: Arial; margin: 32px;">
               <h3>Auto-detection failed: {exc}</h3>
-              <p>Please try a clearer side-view video, or switch to manual calibration.</p>
-              <p><a href="/calibrate/{analysis_id}">Go to manual calibration for this video</a></p>
+              <p>Please try a clearer side-view video, or re-upload and calibrate manually after the new analysis id is created.</p>
               <p><a href="/">Back to home</a></p>
             </body></html>
             """, status_code=400)
-
-        points = result.get("calibration_points", {})
-        pdf_generated, final_html = save_report_assets(run_dir, analysis_id, meta, metrics, scored, points)
-        return HTMLResponse(final_html)
+        return HTMLResponse(record.get("report_html") or render_analysis_report_from_record(record, pdf_available=bool(record.get("pdf_generated"))))
 
 
     @app.post("/compare_start", response_class=HTMLResponse)
     async def compare_start(
         video_a: UploadFile = File(...),
         video_b: UploadFile = File(...),
-        horse_scheme_compare: str = Form("high_wither"),
+        horse_profile_compare: str = Form("high_wither"),
+        discipline_compare: str = Form("general_riding"),
+        horse_scheme_compare: str = Form(""),
         saddle_type_compare: str = Form("english"),
     ):
         if not video_a.filename or not video_b.filename:
             return HTMLResponse("<h3>Both videos are required.</h3>", status_code=400)
-
-        storage.ensure_runtime_directories()
-        compare_id = str(uuid.uuid4())
-        base_dir = storage.comparison_output_dir(compare_id)
-        run_a = storage.comparison_case_dir(compare_id, "a")
-        run_b = storage.comparison_case_dir(compare_id, "b")
-        run_a.mkdir(parents=True, exist_ok=True)
-        run_b.mkdir(parents=True, exist_ok=True)
-
-        # Save videos and frames
-        fname_a = os.path.basename(video_a.filename) or "video_a.mp4"
-        fname_b = os.path.basename(video_b.filename) or "video_b.mp4"
-        path_a = run_a / fname_a
-        path_b = run_b / fname_b
-        with open(path_a, "wb") as f:
-            f.write(await video_a.read())
-        with open(path_b, "wb") as f:
-            f.write(await video_b.read())
-
-        wa, ha = extract_first_frame(path_a, run_a / "frame0.png")
-        wb, hb = extract_first_frame(path_b, run_b / "frame0.png")
-
-        meta_base = {
-            "horse_scheme": horse_scheme_compare,
-            "saddle_type": saddle_type_compare,
-        }
-        meta_a = {**meta_base, "analysis_id": compare_id + "_a", "video_filename": fname_a, "frame_width": wa, "frame_height": ha}
-        meta_b = {**meta_base, "analysis_id": compare_id + "_b", "video_filename": fname_b, "frame_width": wb, "frame_height": hb}
-
         try:
-            _, metrics_a, scored_a, conf_a = analyze_video_auto(run_a, meta_a["analysis_id"], meta_a)
-            _, metrics_b, scored_b, conf_b = analyze_video_auto(run_b, meta_b["analysis_id"], meta_b)
+            record = await process_comparison_uploads(
+                video_a,
+                video_b,
+                horse_profile_compare,
+                discipline_compare,
+                horse_scheme_compare,
+                saddle_type_compare,
+            )
         except Exception as exc:
             return HTMLResponse(f"<h3>Comparison failed:</h3><p>{exc}</p>", status_code=400)
+        return HTMLResponse(record.get("report_html") or render_comparison_report_from_record(record, pdf_available=bool(record.get("pdf_generated")), show_video=True, include_analysis=False))
 
-        compare_meta = {"horse_scheme": horse_scheme_compare, "saddle_type": saddle_type_compare}
-        pdf_generated, final_html = save_compare_report(base_dir, compare_id, compare_meta, fname_a, fname_b, metrics_a, metrics_b, scored_a, scored_b)
 
-        with open(base_dir / "compare.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "compare_id": compare_id,
-                    "video_a": {"file": fname_a, "confidence": conf_a, "metrics": metrics_a, "scores": scored_a["scores"]},
-                    "video_b": {"file": fname_b, "confidence": conf_b, "metrics": metrics_b, "scores": scored_b["scores"]},
-                },
-                f,
-                indent=2,
-            )
+    @app.post("/api/analyze", response_model=AnalysisResponse)
+    async def api_analyze(
+        video: UploadFile = File(...),
+        horse_profile: str = Form("high_wither"),
+        discipline: str = Form("general_riding"),
+        horse_scheme: str = Form(""),
+        saddle_type: str = Form("english"),
+    ):
+        if video is None or not video.filename:
+            return JSONResponse({"error": "No video uploaded."}, status_code=400)
+        record = await process_single_analysis_upload(video, horse_profile, discipline, horse_scheme, saddle_type)
+        payload = dict(record["analysis_payload"])
+        payload["report_html"] = None
+        return _validate_model(AnalysisResponse, payload)
 
-        return HTMLResponse(final_html)
+
+    @app.get("/api/analysis/{analysis_id}", response_model=AnalysisResponse)
+    def api_analysis_get(analysis_id: str):
+        record = load_analysis_record(analysis_id)
+        if record is None:
+            return JSONResponse({"error": "analysis_not_found"}, status_code=404)
+        payload = dict(record["analysis_payload"])
+        payload["report_html"] = None
+        return _validate_model(AnalysisResponse, payload)
+
+
+    @app.get("/api/analysis/{analysis_id}/report", response_model=AnalysisReportResponse)
+    def api_analysis_report(analysis_id: str):
+        record = load_analysis_record(analysis_id)
+        if record is None:
+            return JSONResponse({"error": "analysis_not_found"}, status_code=404)
+        report_html = record.get("report_html") or render_analysis_report_from_record(record, pdf_available=True)
+        payload = dict(record["analysis_payload"])
+        payload["report_html"] = None
+        analysis_model = _validate_model(AnalysisResponse, payload)
+        return _validate_model(
+            AnalysisReportResponse,
+            {
+                "analysis": analysis_model,
+                "report_html": report_html,
+                "report_url": payload.get("report_url"),
+                "pdf_url": payload.get("pdf_url"),
+            },
+        )
+
+
+    @app.post("/api/compare", response_model=ComparisonResponse)
+    async def api_compare(
+        video_a: UploadFile = File(...),
+        video_b: UploadFile = File(...),
+        horse_profile: str = Form("high_wither"),
+        discipline: str = Form("general_riding"),
+        horse_scheme: str = Form(""),
+        saddle_type: str = Form("english"),
+    ):
+        if not video_a.filename or not video_b.filename:
+            return JSONResponse({"error": "Both videos are required."}, status_code=400)
+        record = await process_comparison_uploads(video_a, video_b, horse_profile, discipline, horse_scheme, saddle_type)
+        payload = dict(record["comparison_payload"])
+        payload["report_html"] = None
+        return _validate_model(ComparisonResponse, payload)
+
+
+    @app.get("/api/comparison/{comparison_id}", response_model=ComparisonResponse)
+    def api_comparison_get(comparison_id: str):
+        record = load_comparison_record(comparison_id)
+        if record is None:
+            return JSONResponse({"error": "comparison_not_found"}, status_code=404)
+        payload = dict(record["comparison_payload"])
+        payload["report_html"] = None
+        return _validate_model(ComparisonResponse, payload)
+
+
+    @app.get("/api/comparison/{comparison_id}/report", response_model=ComparisonReportResponse)
+    def api_comparison_report(comparison_id: str):
+        record = load_comparison_record(comparison_id)
+        if record is None:
+            return JSONResponse({"error": "comparison_not_found"}, status_code=404)
+        report_html = record.get("report_html") or render_comparison_report_from_record(record, pdf_available=True, show_video=True, include_analysis=False)
+        payload = dict(record["comparison_payload"])
+        payload["report_html"] = None
+        comparison_model = _validate_model(ComparisonResponse, payload)
+        return _validate_model(
+            ComparisonReportResponse,
+            {
+                "comparison": comparison_model,
+                "report_html": report_html,
+                "report_url": payload.get("report_url"),
+                "pdf_url": payload.get("pdf_url"),
+            },
+        )
 else:
     @app.post("/start", response_class=HTMLResponse)
     async def start_missing():
@@ -3038,6 +5206,30 @@ else:
     @app.post("/compare_start", response_class=HTMLResponse)
     async def compare_start_missing():
         return HTMLResponse("<h3>Server missing dependency python-multipart. Please install it with 'pip install python-multipart' and restart.</h3>", status_code=500)
+
+    @app.post("/api/analyze", response_model=AnalysisResponse)
+    async def api_analyze_missing():
+        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+
+    @app.get("/api/analysis/{analysis_id}", response_model=AnalysisResponse)
+    def api_analysis_get_missing(analysis_id: str):
+        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+
+    @app.get("/api/analysis/{analysis_id}/report", response_model=AnalysisReportResponse)
+    def api_analysis_report_missing(analysis_id: str):
+        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+
+    @app.post("/api/compare", response_model=ComparisonResponse)
+    async def api_compare_missing():
+        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+
+    @app.get("/api/comparison/{comparison_id}", response_model=ComparisonResponse)
+    def api_comparison_get_missing(comparison_id: str):
+        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
+
+    @app.get("/api/comparison/{comparison_id}/report", response_model=ComparisonReportResponse)
+    def api_comparison_report_missing(comparison_id: str):
+        return JSONResponse({"error": "Server missing dependency python-multipart."}, status_code=500)
 
 
 @app.get("/frame/{analysis_id}")
@@ -3072,7 +5264,8 @@ def auto_calibrate_api(analysis_id: str):
     if frame is None:
         return JSONResponse({"error": "frame missing"}, status_code=404)
 
-    res = auto_calibrate_points(frame, meta["horse_scheme"], meta["saddle_type"])
+    horse_profile, discipline, saddle_type = resolve_analysis_context(meta)
+    res = auto_calibrate_points(frame, horse_profile, saddle_type, discipline)
     if res["points"] is None:
         return JSONResponse({"error": "auto_calibration_failed", "details": res.get("details")}, status_code=400)
     return JSONResponse(res)
@@ -3089,8 +5282,7 @@ def calibrate_page(analysis_id: str):
 
     with open(meta_path, "r", encoding="utf-8") as handle:
         meta = json.load(handle)
-    horse_scheme = meta["horse_scheme"]
-    saddle_type = meta["saddle_type"]
+    horse_profile, discipline, saddle_type = resolve_analysis_context(meta)
 
     # NOTE: no JS template strings with ${...} to avoid Python f-string conflicts.
     return f"""
@@ -3134,7 +5326,8 @@ def calibrate_page(analysis_id: str):
           </div>
 
           <div class="right card">
-            <div class="step"><b>Horse scheme:</b> {horse_scheme}</div>
+            <div class="step"><b>Horse profile:</b> {horse_profile}</div>
+            <div class="step"><b>Discipline:</b> {discipline}</div>
             <div class="step"><b>Saddle type:</b> {saddle_type}</div>
 
             <div class="step">
@@ -3320,29 +5513,39 @@ async def run_tracking(analysis_id: str, points: dict = Body(...)):
     tracks, tstats = track_points_lk(frames, init_points)
     metrics = compute_metrics(tracks, times, tstats)
     gear_assessment = evaluate_gear(merged_gear, metrics, meta["horse_scheme"])
-    scored = score_and_recommend(metrics, meta["horse_scheme"], meta["saddle_type"])
+    pose_summary = sample_rider_pose_metrics(frames, times, init_points)
+    scored = score_and_recommend(
+        metrics,
+        meta.get("horse_profile", meta.get("horse_scheme", "high_wither")),
+        meta["saddle_type"],
+        meta.get("discipline", "general_riding"),
+        pose_summary,
+    )
     scored["gear_assessment"] = gear_assessment
     scored["gear_detection"] = detection_data
     scored["gear_used"] = merged_gear
+    scored["pose_summary"] = pose_summary
     mark_scores = compute_mark_scores(metrics, scored)
 
-    result = {
-        "analysis_id": analysis_id,
-        "horse_scheme": meta["horse_scheme"],
-        "saddle_type": meta["saddle_type"],
-        "gear": meta.get("gear", {}),
-        "gear_detected": detection_data,
-        "gear_detection": detection_data,
-        "gear_used": merged_gear,
-        "video_filename": meta["video_filename"],
-        "metrics": metrics,
-        "scores": scored["scores"],
-        "flags": scored["flags"],
-        "recommendations": scored["recommendations"],
-        "calibration_points": init_points,
-        "gear_assessment": gear_assessment,
-        "marks": mark_scores,
-    }
+    result = build_analysis_payload(
+        analysis_id,
+        meta,
+        metrics,
+        scored,
+        points=init_points,
+        pose_summary=pose_summary,
+        mark_scores=mark_scores,
+    )
+    result["gear"] = meta.get("gear", {})
+    result["gear_detected"] = detection_data
+    result["gear_detection"] = detection_data
+    result["gear_used"] = merged_gear
+    result["gear_assessment"] = gear_assessment
+    result["marks"] = mark_scores
+    result["calibration_points"] = init_points
+    result["horse_scheme"] = meta.get("horse_scheme", meta.get("horse_profile", "high_wither"))
+    result["video_filename"] = meta["video_filename"]
+    scored["analysis_payload"] = result
 
     with open(run_dir / "result.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -3359,7 +5562,10 @@ def report(analysis_id: str):
         LEGACY_OUTPUTS_DIR / analysis_id / "report.html",
     )
     if path is None:
-        return HTMLResponse("<h3>Report not found</h3>", status_code=404)
+        record = load_analysis_record(analysis_id)
+        if record is None:
+            return HTMLResponse("<h3>Report not found</h3>", status_code=404)
+        return record.get("report_html") or render_analysis_report_from_record(record, pdf_available=bool(record.get("pdf_generated", True)))
     return path.read_text(encoding="utf-8")
 
 
@@ -3391,6 +5597,8 @@ def report_pdf(analysis_id: str):
             "coach": res.get("coach", {}),
             "gear_detection": res.get("gear_detected", {}),
             "gear_used": res.get("gear_used", {}),
+            "analysis_payload": res,
+            "pose_summary": res.get("pose_summary", {}),
         }
         ensure_pdf_file(analysis_id, meta, res.get("metrics", {}), scores_block, mark_scores, pdf_path)
         return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"report_{analysis_id}.pdf")
@@ -3432,14 +5640,12 @@ def report_pdf_direct(analysis_id: str):
 
 @app.get("/compare_report/{compare_id}", response_class=HTMLResponse)
 def compare_report(compare_id: str):
-    path = first_existing_path(
-        storage.comparison_report_dir(compare_id) / "report.html",
-        storage.comparison_output_dir(compare_id) / "report.html",
-        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "report.html",
-    )
-    if path is None:
+    record = load_comparison_record(compare_id)
+    if record is None:
         return HTMLResponse("<h3>Comparison report not found</h3>", status_code=404)
-    return path.read_text(encoding="utf-8")
+    if record.get("report_html"):
+        return record["report_html"]
+    return render_comparison_report_from_record(record, pdf_available=bool(record.get("pdf_generated", True)), show_video=True, include_analysis=False)
 
 
 @app.get("/compare_report/{compare_id}.pdf")
@@ -3452,12 +5658,8 @@ def compare_report_pdf(compare_id: str):
     if pdf_path is not None:
         return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"compare_{compare_id}.pdf")
 
-    html_path = first_existing_path(
-        storage.comparison_report_dir(compare_id) / "report.html",
-        storage.comparison_output_dir(compare_id) / "report.html",
-        LEGACY_OUTPUTS_DIR / "compare" / compare_id / "report.html",
-    )
-    if html_path is None:
+    record = load_comparison_record(compare_id)
+    if record is None:
         return HTMLResponse("<h3>Comparison PDF not found (install weasyprint to enable PDF export).</h3>", status_code=404)
 
     fallback_dir = storage.comparison_report_dir(compare_id)
@@ -3466,7 +5668,8 @@ def compare_report_pdf(compare_id: str):
     try:
         pdf_renderer = get_weasyprint()
         if pdf_renderer is not None:
-            pdf_renderer.HTML(filename=os.fspath(html_path), base_url=BASE_DIR).write_pdf(os.fspath(pdf_path))
+            html_text = record.get("report_html") or render_comparison_report_from_record(record, pdf_available=True, show_video=True, include_analysis=False)
+            pdf_renderer.HTML(string=html_text, base_url=BASE_DIR).write_pdf(os.fspath(pdf_path))
             return FileResponse(os.fspath(pdf_path), media_type="application/pdf", filename=f"compare_{compare_id}.pdf")
     except Exception:
         pass
